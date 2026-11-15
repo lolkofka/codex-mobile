@@ -1,0 +1,12 @@
+approval_policy = "on-request"
+sandbox_mode = "danger-full-access"
+cli_auth_credentials_store = "file"
+
+[analytics]
+enabled = false
+
+[feedback]
+enabled = false
+
+[shell_environment_policy]
+inherit = "all"

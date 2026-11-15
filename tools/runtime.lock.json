@@ -1,0 +1,20 @@
+{
+  "version": "0.165.0",
+  "source": "https://github.com/openai/codex",
+  "assets": [
+    {
+      "name": "codex-aarch64-unknown-linux-musl.tar.gz",
+      "binary": "codex-aarch64-unknown-linux-musl",
+      "destination": "codex",
+      "size": 107804617,
+      "sha256": "6522e056d0be7f531da915c9a81ae05bc70811b782542499cc0a9776d3abf5d3"
+    },
+    {
+      "name": "codex-code-mode-host-aarch64-unknown-linux-musl.tar.gz",
+      "binary": "codex-code-mode-host-aarch64-unknown-linux-musl",
+      "destination": "codex-code-mode-host",
+      "size": 26648567,
+      "sha256": "400956c325a2118768029f235958b7d2fd2ea4e59c5466d336fb4fb7f0e94b61"
+    }
+  ]
+}
