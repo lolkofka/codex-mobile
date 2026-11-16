@@ -16,8 +16,8 @@ public final class MobileFeatureTests extends Instrumentation {
     StringWriter wire;
     AgentService fake;
     int offset;
-    boolean real,media,notifyOnly;
-    @Override public void onCreate(Bundle args){super.onCreate(args);real=args!=null&&"true".equals(args.getString("real"));media=args!=null&&"true".equals(args.getString("media"));notifyOnly=args!=null&&"true".equals(args.getString("notifyOnly"));start();}
+    boolean real,media,notifyOnly,authOnly;
+    @Override public void onCreate(Bundle args){super.onCreate(args);real=args!=null&&"true".equals(args.getString("real"));media=args!=null&&"true".equals(args.getString("media"));notifyOnly=args!=null&&"true".equals(args.getString("notifyOnly"));authOnly=args!=null&&"true".equals(args.getString("authOnly"));start();}
     void check(boolean value,String message){if(!value)throw new AssertionError(message);}
     void main(Runnable action){runOnMainSync(action);}
     void pass(String name){passed.add(name);Bundle b=new Bundle();b.putString("check",name);sendStatus(0,b);}
@@ -42,7 +42,25 @@ public final class MobileFeatureTests extends Instrumentation {
     void error(JSONObject request){main(()->fake.handle(AgentService.j("id",request.opt("id"),"error",AgentService.j("message","test rejection"))));}
     void event(String method,String id,String status){main(()->fake.handle(AgentService.j("method",method,"params",AgentService.j("threadId","thread-test","turn",AgentService.j("id",id,"status",status)))));waitForIdleSync();}
     JSONObject beginFake(){main(()->fake.submitText("first","queue"));JSONObject thread=next("thread/start");reply(thread,AgentService.j("thread",AgentService.j("id","thread-test")));return next("turn/start");}
+    void authMockTests(){
+        fresh();main(()->{fake.login(true);fake.login(true);});
+        check(count("account/login/start")==1,"double tap cannot start parallel login");
+        JSONObject start=next("account/login/start");reply(start,AgentService.j("loginId","old-login","verificationUrl","https://auth.openai.com/codex/device","userCode","TEST-0001"));
+        main(()->fake.login(true));check(count("account/login/start")==1&&count("account/login/cancel")==0,"ordinary login reuses pending code");
+        main(()->fake.restartLogin(true));JSONObject cancel=next("account/login/cancel");
+        check(count("account/login/start")==1,"new login waits for cancellation");reply(cancel,AgentService.j("status","canceled"));
+        start=next("account/login/start");reply(start,AgentService.j("loginId","new-login","verificationUrl","https://auth.openai.com/codex/device","userCode","TEST-0002"));
+        main(()->fake.handle(AgentService.j("method","account/login/completed","params",AgentService.j("loginId","old-login","success",false,"error","cancelled"))));
+        check(fake.loginFlow.id.equals("new-login")&&fake.loginFlow.code.equals("TEST-0002"),"late failure cannot erase new login");
+        main(()->fake.handle(AgentService.j("method","account/login/completed","params",AgentService.j("loginId","new-login","success",true))));
+        JSONObject account=next("account/read");reply(account,AgentService.j("account",AgentService.j("type","chatgpt","email","synthetic@example.invalid","planType","plus")));
+        check(fake.loggedIn&&!fake.loginFlow.pending()&&fake.loginError.isEmpty(),"success rereads managed account and clears login state");
+        main(()->fake.login(true));start=next("account/login/start");error(start);
+        check(!fake.loginFlow.pending()&&!fake.loginError.isEmpty(),"start failure releases login and surfaces error");
+        pass("native login double-tap, explicit restart, cancellation race, completion and failure");
+    }
     void mockTests(){
+        authMockTests();
         fresh();JSONObject first=beginFake();
         main(()->{fake.selectModel("two");fake.selectEffort("high");check(fake.submitText("queued","queue"),"queue accepted while start pending");check(fake.submitText("steered","steer"),"steer accepted while start pending");fake.selectModel("one");});
         check(count("turn/start")==1&&count("turn/steer")==0,"no premature delivery without turn id");
@@ -192,9 +210,24 @@ public final class MobileFeatureTests extends Instrumentation {
         }
     }
 
+    void authTest()throws Exception{
+        activity=(MainActivity)startActivitySync(new Intent().setClassName("local.avr.codex","local.avr.codex.MainActivity").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+        until(()->activity.agent!=null&&activity.agent.ready,25000,"Live engine not ready");
+        main(()->live=activity.agent);check(!live.busy&&live.outbox.entries.isEmpty(),"User task active; leaving it untouched");
+        CountDownLatch refreshed=new CountDownLatch(1);String[] failure={""};boolean[] signedIn={false};
+        main(()->live.readAccount(true,ok->{signedIn[0]=ok;failure[0]=live.loginError;refreshed.countDown();}));
+        check(refreshed.await(45,TimeUnit.SECONDS),"Managed token refresh timed out");
+        check(failure[0].isEmpty(),"Managed token refresh failed: "+failure[0]);check(signedIn[0],"No saved ChatGPT account; browser login required");
+        check(live.loginError.isEmpty(),"Successful refresh must clear old browser failure banner");
+        pass("live managed token refresh through app network bridge; account remains signed in");
+        CountDownLatch checked=new CountDownLatch(1);String[] result={""};
+        main(()->live.request("command/exec",AgentService.j("command",new JSONArray().put("/system/bin/sh").put("-c").put("curl -sS --connect-timeout 8 --max-time 15 -o /dev/null -w '%{http_code}' -H 'Content-Type: application/x-www-form-urlencoded' --data 'grant_type=connectivity_test' https://auth.openai.com/oauth/token"),"cwd",AgentService.BASE+"/workspace","sandboxPolicy",AgentService.j("type","dangerFullAccess"),"timeoutMs",20000),r->{result[0]=r.optInt("exitCode",-1)+":"+r.optString("stdout");checked.countDown();},e->{result[0]=LoginFlow.safeError(e);checked.countDown();}));
+        check(checked.await(25,TimeUnit.SECONDS),"Engine network probe timed out");check(result[0].equals("0:400"),"Token endpoint not reachable from engine: "+result[0]);
+        pass("live engine HTTPS reaches token endpoint; synthetic grant rejected with expected HTTP 400");
+    }
     @Override public void onStart(){
         Bundle result=new Bundle();
-        try{if(notifyOnly)notificationTest();else if(real)realTests();else{mockTests();if(media)mediaTests();}result.putString("passed",String.join("; ",passed));result.putString("status","PASS");finish(Activity.RESULT_OK,result);}
+        try{if(authOnly)authTest();else if(notifyOnly)notificationTest();else if(real)realTests();else{mockTests();if(media)mediaTests();}result.putString("passed",String.join("; ",passed));result.putString("status","PASS");finish(Activity.RESULT_OK,result);}
         catch(Throwable e){StringWriter s=new StringWriter();e.printStackTrace(new PrintWriter(s));result.putString("failure",s.toString());finish(Activity.RESULT_CANCELED,result);}
     }
 }

@@ -134,10 +134,7 @@ public class ChatActivity extends Activity {
         updateDrawer();
         voice.sync(agent.busy,agent.completedTurns,agent.lastAnswer,!agent.approvals.isEmpty());
         if(mute!=null)mute.setText(voice.muted()?"Включить микрофон":"Микрофон включён");
-        if(authRequested&&!agent.authUrl.isEmpty()&&!openedAuth.equals(agent.authUrl)){
-            openedAuth=agent.authUrl;authRequested=false;
-            if(!agent.userCode.isEmpty()){copy(agent.userCode);new AlertDialog.Builder(this).setTitle("Код входа: "+agent.userCode).setMessage("Код скопирован. Введи его на сайте OpenAI.").setPositiveButton("Открыть",(d,w)->openAuth(agent.authUrl)).setNegativeButton("Позже",null).show();}else openAuth(agent.authUrl);
-        }
+        showPendingLogin();
         if(foreground&&!agent.approvals.isEmpty())showApproval(agent.approvals.get(0));
         if(agent.approvals.isEmpty()&&approvalDialog!=null){approvalDialog.dismiss();approvalDialog=null;shownApproval="";}
     }
@@ -178,13 +175,24 @@ public class ChatActivity extends Activity {
     }
     void accountMenu(){
         if(agent==null)return;if(!agent.ready){new AlertDialog.Builder(this).setTitle("Движок Codex").setMessage(agent.state).setPositiveButton("Запустить",(d,w)->agent.startEngine()).setNegativeButton("Закрыть",null).show();return;}
-        if(!agent.loggedIn&&!agent.authUrl.isEmpty()){
+        if(agent.loginFlow.working()){Toast.makeText(this,agent.state,Toast.LENGTH_SHORT).show();return;}
+        if(!agent.loggedIn&&!agent.loginFlow.url.isEmpty()){
             new AlertDialog.Builder(this).setTitle("Вход в ChatGPT").setItems(new String[]{"Продолжить вход","Начать новый вход через браузер","Начать новый вход по коду"},(d,i)->{
-                authRequested=true;openedAuth="";if(i==0)render();else agent.login(i==2);
+                authRequested=true;openedAuth="";if(i==0)render();else agent.restartLogin(i==2);
             }).setNegativeButton("Позже",null).show();return;
         }
         String[] choices=agent.loggedIn?new String[]{"Проверить root и Docker","Обновить аккаунт","Выйти из аккаунта","Остановить помощника"}:new String[]{"Войти через браузер","Войти по коду устройства","Проверить root и Docker","Остановить помощника"};
         new AlertDialog.Builder(this).setTitle(agent.account).setItems(choices,(d,i)->{if(agent.loggedIn){if(i==0)agent.diagnostics();if(i==1)agent.readAccount();if(i==2)agent.logout();if(i==3)stopAgent();}else{if(i<2){authRequested=true;openedAuth="";agent.login(i==1);}if(i==2)agent.diagnostics();if(i==3)stopAgent();}}).show();
+    }
+    void showPendingLogin(){
+        if(!foreground||agent==null||!authRequested||!agent.loginFlow.waiting()||openedAuth.equals(agent.loginFlow.url))return;
+        final String url=agent.loginFlow.url,code=agent.loginFlow.code;
+        openedAuth=url;authRequested=false;
+        if(!code.isEmpty()){
+            copy(code);new AlertDialog.Builder(this).setTitle("Код входа: "+code).setMessage("Код скопирован. Введи его на сайте OpenAI.")
+                .setPositiveButton("Открыть",(d,w)->{if(agent!=null&&agent.loginFlow.waiting()&&url.equals(agent.loginFlow.url)&&code.equals(agent.loginFlow.code))openAuth(url);else Toast.makeText(this,"Эта попытка входа завершена. Открой вход заново.",Toast.LENGTH_LONG).show();})
+                .setNegativeButton("Позже",null).show();
+        }else openAuth(url);
     }
     void stopAgent(){stopService(new Intent(this,AgentService.class));finish();}
     void openAuth(String value){Uri u=Uri.parse(value);String host=u.getHost();if(!"https".equals(u.getScheme())||!("auth.openai.com".equals(host)||"chatgpt.com".equals(host)||"login.openai.com".equals(host))){Toast.makeText(this,"Неожиданный адрес входа",Toast.LENGTH_LONG).show();return;}startActivity(new Intent(Intent.ACTION_VIEW,u));}

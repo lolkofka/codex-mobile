@@ -134,7 +134,13 @@ function openSheet(kind,data=null){sheetKind=kind;sheetData=data;const c=$('shee
  if(kind==='effort'){c.append(option('Автоматически',()=>{post('effort','');closeSheet();},'Рекомендуемый уровень модели',!state.effort));for(const e of selectedModel()?.supportedReasoningEfforts||[])c.append(option(effortLabels[e.reasoningEffort]||e.reasoningEffort,()=>{post('effort',e.reasoningEffort);closeSheet();},effortDetails[e.reasoningEffort]||e.description,state.effort===e.reasoningEffort));}
  if(kind==='account'){
   const sub=document.createElement('p');sub.className='sheet-subtitle';sub.textContent=state.loggedIn?state.account:'Вход через твой аккаунт ChatGPT';c.append(sub);
-  if(!state.loggedIn&&state.target!=='pc'){if(state.loginPending)c.append(option('Продолжить вход',()=>{post('continueLogin');closeSheet();}));c.append(option('Войти через браузер',()=>{post('loginBrowser');closeSheet();}));c.append(option('Войти по коду',()=>{post('loginDevice');closeSheet();}));}
+  if(state.loginError){const error=document.createElement('p');error.className='sheet-subtitle';error.textContent='Ошибка входа: '+state.loginError;c.append(error);}
+  if(state.target!=='pc'){
+   if(state.loginWorking){const pending=option('Подготавливаю вход…',()=>{},'Дождись ответа движка');pending.disabled=true;c.append(pending);}
+   else if(state.loginPending){c.append(option('Продолжить вход',()=>{post('continueLogin');closeSheet();},'Текущая ссылка и код сохранятся'));c.append(option('Получить новый код',()=>{post('restartLoginDevice');closeSheet();},'Отменит предыдущую попытку'));c.append(option('Начать новый вход через браузер',()=>{post('restartLoginBrowser');closeSheet();}));}
+   else if(!state.loggedIn){c.append(option('Войти по коду',()=>{post('loginDevice');closeSheet();}));c.append(option('Войти через браузер',()=>{post('loginBrowser');closeSheet();}));}
+   else{c.append(option('Проверить вход',()=>{post('checkAccount');closeSheet();}));c.append(option('Войти заново по коду',()=>{post('loginDevice');closeSheet();}));}
+  }
   c.append(option('Устройства',()=>openSheet('devices'),state.target==='pc'?'Сейчас: ПК':'Сейчас: этот телефон',false,false,'phone'));
    c.append(option('Уведомления о задачах',()=>{post('notificationSettings');closeSheet();},'Настройки Android: звук, шторка и экран блокировки'));
   c.append(option(state.target==='pc'?'Проверить подключение ПК':'Проверить телефон и Docker',()=>{post('diagnostics');closeSheet();},state.target==='pc'?'Прочитать имя ПК и рабочую папку':'Команды выполняются на этом телефоне',false,false,'phone'));

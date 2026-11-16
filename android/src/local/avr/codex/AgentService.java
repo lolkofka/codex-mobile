@@ -26,11 +26,13 @@ public final class AgentService extends Service {
     private boolean stopRequested;
     JSONArray threads = new JSONArray(), models = new JSONArray();
     String state = "Запускаю локальный движок…", account = "Войти с ChatGPT";
-    String threadId = "", turnId = "", model = "", effort = "", authUrl = "", userCode = "";
+    String threadId = "", turnId = "", model = "", effort = "";
     String currentTitle="Новый чат", threadCursor="", threadSearch="", lastAnswer="";
     int completedTurns;
     private String activeFinalAnswer="", activeLastAnswer="";
-    private String loginId="";
+    final LoginFlow loginFlow=new LoginFlow();
+    String loginError="";
+    private boolean engineStarting;
     boolean ready, loggedIn, busy;
     int visibleClients;
     TaskNotifications notifications;
@@ -45,6 +47,7 @@ public final class AgentService extends Service {
     boolean remoteMode;
     private volatile int engineGeneration;
     private volatile RemotePc remoteConnection;
+    private volatile EngineNetworkProxy networkProxy;
     private final IBinder binder = new LocalBinder();
 
     public final class LocalBinder extends Binder { AgentService get() { return AgentService.this; } }
@@ -69,6 +72,8 @@ public final class AgentService extends Service {
         model=getSharedPreferences("settings",0).getString("model","");
         effort=getSharedPreferences("settings",0).getString("effort","");
         remoteMode=getSharedPreferences("settings",0).getBoolean("remoteMode",false);
+        loginError=getSharedPreferences("runtime",0).getString("lastLoginError","");
+        getSharedPreferences("runtime",0).edit().putBoolean("authPending",false).apply();
         restoreOutbox();
         notifications=new TaskNotifications(this);startForeground(1,notifications.ongoing());
         startEngine();
@@ -126,11 +131,13 @@ public final class AgentService extends Service {
     }
     void notice(String text) { add("notice-"+System.nanoTime(),"notice",text); }
     void startEngine() {
+        if(ready||engineStarting)return;
+        engineStarting=true;
         final int generation=++engineGeneration;
         final boolean pc=remoteMode;
         stopping=false; ready=false; state=pc?"Подключаюсь к ПК по SSH…":"Запускаю локальный движок…"; changed();
         new Thread(()->{
-            Process child=null;RemotePc remote=null;
+            Process child=null;RemotePc remote=null;EngineNetworkProxy bridge=null;
             try {
                 final InputStream input;
                 final OutputStream output;
@@ -139,7 +146,8 @@ public final class AgentService extends Service {
                     if(generation!=engineGeneration){remote.close();return;}
                     remoteConnection=remote;input=remote.input;output=remote.output;
                 }else{
-                    child=new ProcessBuilder("su","-c","/system/bin/sh "+BASE+"/run").start();
+                    bridge=new EngineNetworkProxy();networkProxy=bridge;
+                    child=new ProcessBuilder("su","-c","/system/bin/sh "+BASE+"/run "+MediaFiles.quote(bridge.address())).start();
                     if(generation!=engineGeneration){child.destroy();return;}
                     process=child;input=child.getInputStream();output=child.getOutputStream();
                 }
@@ -157,8 +165,8 @@ public final class AgentService extends Service {
                         if(!detail.isEmpty()) main.post(()->{ if(generation==engineGeneration&&!ready && !stopping) notice("Движок: "+detail); });
                     } catch(IOException ignored) {}
                 },"codex-stderr").start();
-                main.post(()->{if(generation!=engineGeneration)return;request("initialize",j("clientInfo",j("name","avr_codex_mobile","title","Codex Mobile AVR","version","0.6.0")),r->{
-                    notifyServer("initialized",j()); ready=true; state=readyLabel();if(notifications!=null)notifications.update();
+                main.post(()->{if(generation!=engineGeneration)return;request("initialize",j("clientInfo",j("name","avr_codex_mobile","title","Codex Mobile AVR","version","0.6.1")),r->{
+                    notifyServer("initialized",j()); engineStarting=false;ready=true; state=readyLabel();if(notifications!=null)notifications.update();
                     getSharedPreferences("runtime",0).edit().putBoolean("connectedToPc",pc).putString("connectionError","").apply();
                     readAccount(); refreshThreads(); refreshModels();
                     String last=getSharedPreferences("settings",0).getString(lastThreadKey(),"");
@@ -174,14 +182,14 @@ public final class AgentService extends Service {
                     }
                 }
                 if(child!=null)child.waitFor();
-                main.post(()->{if(generation!=engineGeneration)return;ready=false;busy=false;turnId="";writer=null;connectionLost();state=pc?"Соединение с ПК закрыто":"Движок остановлен";changed();});
+                main.post(()->{if(generation!=engineGeneration)return;engineStarting=false;ready=false;busy=false;turnId="";writer=null;connectionLost();state=pc?"Соединение с ПК закрыто":"Движок остановлен";changed();});
             } catch(Exception e) {
-                main.post(()->{if(generation!=engineGeneration)return;ready=false;busy=false;turnId="";writer=null;connectionLost();
+                main.post(()->{if(generation!=engineGeneration)return;engineStarting=false;ready=false;busy=false;turnId="";writer=null;connectionLost();
                     state=pc?"Ошибка подключения к ПК":"Не удалось запустить: проверь root-доступ";
-                    String detail=pc?e.getClass().getSimpleName()+": "+String.valueOf(e.getMessage()).replaceAll("https?://\\S+","<url>"):e.toString();
+                    String detail=LoginFlow.safeError(e.toString());
                     getSharedPreferences("runtime",0).edit().putBoolean("connectedToPc",false).putString("connectionError",detail).apply();
                     notice(pc?"ПК недоступен. Проверь адрес, Wi-Fi и разрешение SSH. "+detail:detail);changed();});
-            }finally{if(remote!=null)remote.close();}
+            }finally{if(remote!=null)remote.close();if(bridge!=null){bridge.close();if(networkProxy==bridge)networkProxy=null;}}
         },"codex-stdio").start();
     }
     String readyLabel(){return remoteMode?"Готов · команды на ПК":"Готов · root на телефоне";}
@@ -193,9 +201,10 @@ public final class AgentService extends Service {
         try{if(writer!=null)writer.close();}catch(IOException ignored){}writer=null;
         if(remoteConnection!=null){remoteConnection.close();remoteConnection=null;}
         if(process!=null){process.destroy();process=null;}
+        if(networkProxy!=null){networkProxy.close();networkProxy=null;}
         callbacks.clear();failures.clear();requestMethods.clear();messages.clear();approvals.clear();models=new JSONArray();threads=new JSONArray();modelsLoading=false;modelsError="";
         remoteMode=pc;ready=false;loggedIn=false;account="";threadId="";turnId="";threadCursor="";threadSearch="";currentTitle="Новый чат";
-        authUrl="";userCode="";loginId="";
+        loginFlow.reset();loginError="";engineStarting=false;
         getSharedPreferences("settings",0).edit().putBoolean("remoteMode",pc).apply();
         getSharedPreferences("runtime",0).edit().putBoolean("connectedToPc",false).apply();
         restoreOutbox();
@@ -225,7 +234,6 @@ public final class AgentService extends Service {
                 state="Ошибка запроса";
                 if("turn/start".equals(requestMethod)||"thread/start".equals(requestMethod))busy=false;
                 String error=m.optJSONObject("error").optString("message","Ошибка Codex");if(failure!=null)failure.accept(error);else notice(error);
-                if("account/login/start".equals(requestMethod))getSharedPreferences("runtime",0).edit().putBoolean("authPending",false).putString("lastLoginError",error.replaceAll("https?://\\S+","<url>")).apply();
             }
             else if(callback!=null) callback.accept(m.optJSONObject("result"));
             changed(); return;
@@ -238,14 +246,9 @@ public final class AgentService extends Service {
             send(j("id",m.opt("id"),"error",j("code",-32601,"message","This mobile client does not support this request")));return;
         }
         if(method.equals("account/login/completed")) {
-            String completedId=p.optString("loginId");
-            if(!loginId.isEmpty()&&!completedId.isEmpty()&&!completedId.equals(loginId))return;
-            loginId="";
-            authUrl="";userCode="";
-            getSharedPreferences("runtime",0).edit().putBoolean("authPending",false)
-                .putString("lastLoginError",p.optBoolean("success")?"":p.optString("error","").replaceAll("https?://\\S+","<url>")).apply();
-            if(p.optBoolean("success")) { readAccount();refreshModels();state="Вход выполнен"; }
-            else notice("Вход не завершён: "+p.optString("error","попробуй снова"));
+            if(!loginFlow.complete(p.optString("loginId")))return;
+            if(p.optBoolean("success")) { setLoginError("");readAccount();refreshModels();state="Вход выполнен"; }
+            else {setLoginError(p.optString("error","Попробуй новый вход"));state="Ошибка входа";notice("Вход не завершён: "+loginError);}
         } else if(method.equals("account/updated")) readAccount();
         else if(method.equals("turn/started")) {
             JSONObject turn=p.optJSONObject("turn");if(turn!=null)turnId=turn.optString("id");busy=true;state="Codex работает…";
@@ -348,12 +351,15 @@ public final class AgentService extends Service {
             main.post(()->{loadingImages.remove(id);Message m=messages.get(id);if(m!=null&&owner.equals(threadId)){m.images=new JSONArray().put(MediaFiles.describe(f));m.revision++;changed();}});
         }catch(Exception e){main.post(()->{loadingImages.remove(id);if(owner.equals(threadId)){add(id,"notice","Не удалось показать изображение: "+e.getMessage());}});}},"generated-image").start();
     }
-    void readAccount() {
-        request("account/read",j("refreshToken",false),r->{
+    void readAccount() {readAccount(false);}
+    void readAccount(boolean refresh) {readAccount(refresh,ignored->{});}
+    void readAccount(boolean refresh,Consumer<Boolean> complete) {
+        request("account/read",j("refreshToken",refresh),r->{
             JSONObject a=r.optJSONObject("account");loggedIn=a!=null;
+            if(refresh&&loggedIn){setLoginError("");if(!busy&&!loginFlow.pending())state=readyLabel();}
             getSharedPreferences("runtime",0).edit().putBoolean("loggedIn",loggedIn).apply();
-            account=a==null?"Войти с ChatGPT":a.optString("email","ChatGPT")+" · "+a.optString("planType","");changed();
-        });
+            account=a==null?"Войти с ChatGPT":a.optString("email","ChatGPT")+" · "+a.optString("planType","");changed();complete.accept(loggedIn);
+        },error->{setLoginError(error);state="Ошибка проверки входа";notice("Не удалось проверить вход: "+loginError);changed();complete.accept(false);});
     }
     void refreshThreads() { queryThreads(threadSearch,false); }
     void queryThreads(String search,boolean more) {
@@ -397,21 +403,38 @@ public final class AgentService extends Service {
     }
     void login(boolean device) {
         if(remoteMode){notice("На ПК используется его текущий вход в Codex. Войди через настольное приложение ПК.");return;}
-        if(!loginId.isEmpty()){
-            String previous=loginId;loginId="";authUrl="";userCode="";
-            request("account/login/cancel",j("loginId",previous),r->beginLogin(device));return;
-        }
+        if(!ready){notice("Дождись запуска движка.");return;}
+        if(loginFlow.pending()){changed();return;}
         beginLogin(device);
     }
+    void restartLogin(boolean device){
+        if(remoteMode||!ready||loginFlow.working()){login(device);return;}
+        if(!loginFlow.waiting()){login(device);return;}
+        final String previous=loginFlow.id;final long ticket=loginFlow.cancel();
+        state="Отменяю предыдущий вход…";changed();
+        request("account/login/cancel",j("loginId",previous),r->{
+            if(!loginFlow.cancelling(ticket))return;
+            loginFlow.reset();beginLogin(device);
+        },error->{if(!loginFlow.cancelling(ticket))return;loginFlow.cancelFailed(ticket);setLoginError(error);state="Не удалось отменить вход";changed();});
+        main.postDelayed(()->{if(loginFlow.cancelling(ticket)){loginFlow.cancelFailed(ticket);setLoginError("Сервер не подтвердил отмену. Проверь соединение и повтори.");state="Ошибка входа";changed();}},60000);
+    }
+    private void setLoginError(String error){
+        loginError=LoginFlow.safeError(error);
+        getSharedPreferences("runtime",0).edit().putBoolean("authPending",loginFlow.pending()).putString("lastLoginError",loginError).apply();
+    }
     private void beginLogin(boolean device) {
+        final long ticket=loginFlow.begin();if(ticket==0)return;
+        setLoginError("");
         state="Подготавливаю вход…";changed();
         request("account/login/start",device?j("type","chatgptDeviceCode"):j("type","chatgpt","useHostedLoginSuccessPage",true,"appBrand","codex"),r->{
-            loginId=r.optString("loginId");
-            authUrl=r.optString("authUrl",r.optString("verificationUrl"));userCode=r.optString("userCode");state="Заверши вход в браузере";changed();
-            getSharedPreferences("runtime",0).edit().putBoolean("authPending",true).putString("lastLoginError","").apply();
-        });
+            String id=r.optString("loginId");
+            if(!loginFlow.starting(ticket)){if(!id.isEmpty())request("account/login/cancel",j("loginId",id),ignored->{},ignored->{});return;}
+            try{loginFlow.accept(ticket,id,r.optString("authUrl",r.optString("verificationUrl")),r.optString("userCode"));state="Заверши вход в браузере";changed();}
+            catch(IllegalArgumentException e){loginFlow.reset();setLoginError("Движок не вернул адрес входа. Начни новую попытку.");state="Ошибка входа";changed();}
+        },error->{if(!loginFlow.starting(ticket))return;loginFlow.reset();setLoginError(error);state="Ошибка входа";notice(loginError);changed();});
+        main.postDelayed(()->{if(loginFlow.starting(ticket)){loginFlow.reset();setLoginError("Не удалось получить ссылку за минуту. Проверь интернет/VPN и повтори вход.");state="Ошибка входа";changed();}},60000);
     }
-    void logout() { if(remoteMode){notice("Выход из аккаунта ПК выполняется на самом ПК.");return;} request("account/logout",j(),r->{loggedIn=false;account="Войти с ChatGPT";changed();}); }
+    void logout() { if(remoteMode){notice("Выход из аккаунта ПК выполняется на самом ПК.");return;} if(loginFlow.pending()){notice("Сначала заверши текущий вход.");return;}request("account/logout",j(),r->{loggedIn=false;loginFlow.reset();setLoginError("");getSharedPreferences("runtime",0).edit().putBoolean("loggedIn",false).apply();account="Войти с ChatGPT";changed();}); }
     JSONObject threadOptions() {
         JSONObject p;
         if(remoteMode){
@@ -476,7 +499,7 @@ public final class AgentService extends Service {
     JSONArray outboxState(){JSONArray a=new JSONArray();for(TurnOutbox.Entry e:outbox.entries)a.put(j("id",e.id,"text",e.text,"thread",e.thread,"mode",e.mode,"status",e.status,"error",e.error,"model",e.model,"effort",e.effort,"images",e.images));return a;}
     private void saveOutbox(){getSharedPreferences("outbox",0).edit().putString(remoteMode?"pc":"phone",outboxState().toString()).apply();}
     private void restoreOutbox(){try{JSONArray a=new JSONArray(getSharedPreferences("outbox",0).getString(remoteMode?"pc":"phone","[]"));for(int i=0;i<a.length();i++){JSONObject o=a.getJSONObject(i);TurnOutbox.Entry e=new TurnOutbox.Entry(o.getString("id"),o.getString("text"),o.optString("thread"),o.optString("mode","queue"),o.optString("model"),o.optString("effort"));e.images=o.optString("images","[]");e.status=o.optString("status","waiting");e.error=o.optString("error");outbox.entries.add(e);}outbox.recover();}catch(JSONException ignored){} }
-    private void connectionLost(){modelsLoading=false;outbox.recover();saveOutbox();callbacks.clear();failures.clear();requestMethods.clear();}
+    private void connectionLost(){if(loginFlow.pending()){loginFlow.reset();setLoginError("Движок отключился во время входа. Начни новую попытку.");}modelsLoading=false;outbox.recover();saveOutbox();callbacks.clear();failures.clear();requestMethods.clear();}
     void removeQueued(String id){if(outbox.remove(id)){saveOutbox();changed();}}
     void steerQueued(String id){TurnOutbox.Entry e=outbox.get(id);if(e==null||e.status.equals("sending"))return;e.mode="steer";e.status="waiting";e.error="";saveOutbox();changed();drainOutbox();}
     void pauseQueue(boolean paused){outbox.paused=paused;if(!paused)for(TurnOutbox.Entry e:outbox.entries)if(e.status.equals("failed")){e.status="waiting";e.mode="queue";e.error="";}saveOutbox();changed();drainOutbox();}
@@ -532,6 +555,8 @@ public final class AgentService extends Service {
     }
     @Override public void onDestroy() {
         stopping=true;++engineGeneration;
+        loginFlow.reset();getSharedPreferences("runtime",0).edit().putBoolean("authPending",false).apply();
+        if(networkProxy!=null)networkProxy.close();
         if(remoteConnection!=null)remoteConnection.close();
         try{if(writer!=null)writer.close();}catch(IOException ignored){}
         if(process!=null)process.destroy();

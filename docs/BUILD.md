@@ -48,11 +48,19 @@ python tests/run_ui_tests.py --browser /path/to/chrome-or-edge
 
 ## Native instrumentation
 
+Проверки входа и сетевого моста без телефона:
+
+```console
+python tests/run_host_tests.py
+```
+
+На телефоне дополнительно доступен `-e authOnly true`: он обновляет токен через официальный app-server и делает синтетический запрос без учётных данных к token endpoint. Учётные данные и содержимое `auth.json` тест не выводит.
+
 После обычной сборки подготовьте тестовый APK, подписанный тем же ключом:
 
 ```console
 python tools/build_native_tests.py --sdk /path/to/android-sdk
-adb -s SERIAL install -r dist/Codex-Mobile-0.6.0.apk
+adb -s SERIAL install -r dist/Codex-Mobile-0.6.1.apk
 adb -s SERIAL install -r dist/Codex-Mobile-tests.apk
 adb -s SERIAL shell am instrument -w -r -e media true local.avr.codex.tests/local.avr.codex.MobileFeatureTests
 adb -s SERIAL uninstall local.avr.codex.tests

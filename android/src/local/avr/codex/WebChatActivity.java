@@ -96,7 +96,7 @@ public class WebChatActivity extends ChatActivity {
         }
         sent.keySet().retainAll(present);
         JSONObject packet=AgentService.j("replace",replace,"updates",updates,"ready",agent.ready,"busy",agent.busy,
-            "loggedIn",agent.loggedIn,"loginPending",!agent.authUrl.isEmpty(),"account",agent.account,"status",agent.state,"model",agent.model,"effort",agent.effort,
+            "loggedIn",agent.loggedIn,"loginPending",agent.loginFlow.waiting(),"loginWorking",agent.loginFlow.working(),"loginError",agent.loginError,"account",agent.account,"status",agent.state,"model",agent.model,"effort",agent.effort,
             "hasMoreChats",!agent.threadCursor.isEmpty(),"title",agent.currentTitle,
             "outbox",agent.outboxState(),"queuePaused",agent.outbox.paused,"modelsLoading",agent.modelsLoading,"modelsError",agent.modelsError,
             "target",agent.remoteMode?"pc":"phone","pcConfigured",RemotePc.configured(this));
@@ -111,13 +111,7 @@ public class WebChatActivity extends ChatActivity {
         callJs("applyState",packet);
         voice.sync(agent.busy,agent.completedTurns,agent.lastAnswer,!agent.approvals.isEmpty());
         if(mute!=null)mute.setText(voice.muted()?"Включить микрофон":"Микрофон включён");
-        if(authRequested&&!agent.authUrl.isEmpty()&&!openedAuth.equals(agent.authUrl)){
-            openedAuth=agent.authUrl;authRequested=false;
-            if(!agent.userCode.isEmpty()){
-                copy(agent.userCode);new android.app.AlertDialog.Builder(this).setTitle("Код входа: "+agent.userCode)
-                    .setMessage("Код скопирован. Введи его на сайте OpenAI.").setPositiveButton("Открыть",(d,w)->openAuth(agent.authUrl)).setNegativeButton("Позже",null).show();
-            }else openAuth(agent.authUrl);
-        }
+        showPendingLogin();
         if(foreground&&!agent.approvals.isEmpty())showApproval(agent.approvals.get(0));
         if(agent.approvals.isEmpty()&&approvalDialog!=null){approvalDialog.dismiss();approvalDialog=null;shownApproval="";}
     }
@@ -191,7 +185,10 @@ public class WebChatActivity extends ChatActivity {
             case "diagnostics":agent.diagnostics();break;
             case "loginBrowser":authRequested=true;openedAuth="";agent.login(false);break;
             case "loginDevice":authRequested=true;openedAuth="";agent.login(true);break;
+            case "restartLoginBrowser":authRequested=true;openedAuth="";agent.restartLogin(false);break;
+            case "restartLoginDevice":authRequested=true;openedAuth="";agent.restartLogin(true);break;
             case "continueLogin":authRequested=true;openedAuth="";render();break;
+            case "checkAccount":agent.readAccount(true);Toast.makeText(this,"Проверяю сохранённый вход…",Toast.LENGTH_SHORT).show();break;
             case "logout":agent.logout();break;
             case "stopEngine":stopAgent();break;
         }

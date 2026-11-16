@@ -21,6 +21,8 @@ jobs:
         run: '"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" "build-tools;36.0.0"'
       - name: Check source
         run: python tools/check_project.py
+      - name: Check login and network lifecycle
+        run: python tests/run_host_tests.py
       - name: Check bundled interface
         run: python tests/run_ui_tests.py --browser /usr/bin/google-chrome
       - name: Build client and temporary instrumentation

@@ -21,6 +21,12 @@ setTimeout(()=>{
   assert(box.querySelector('[data-link="/sdcard/My Folder/report.pdf:12"]')!==null,'local path with spaces and line number is preserved');
   assert(!box.querySelector('img')&&!box.innerHTML.includes('href="javascript:'),'message markup cannot inject active HTML');
   box.querySelector('a').click();assert(requests.at(-1).action==='openLink'&&requests.at(-1).value.includes('a_(b)'),'nested URL reaches Android unchanged');box.remove();
+  applyState({loggedIn:false,loginPending:true,loginWorking:false,loginError:'Token exchange failed'});openSheet('account');
+  assert(!$('sheet-content').textContent.includes('Войти по коду')&&$('sheet-content').textContent.includes('Ошибка входа: Token exchange failed'),'pending login offers continuation and a visible error');
+  clickOption('Продолжить вход');assert(requests.at(-1).action==='continueLogin','continuation never starts or cancels a login');
+  openSheet('account');clickOption('Получить новый код');assert(requests.at(-1).action==='restartLoginDevice','new code uses explicit cancellation path');
+  applyState({loginPending:false,loginWorking:true,loginError:''});openSheet('account');assert(document.querySelector('#sheet-content .option').disabled,'parallel login is disabled while preparing');closeSheet();
+  applyState({loggedIn:true,loginWorking:false});
   applyState({replace:true,ready:true,busy:true,loggedIn:true,status:'Codex работает…',order:['generated'],updates:[{id:'generated',kind:'image',text:'Изображение готово',complete:true,images:[{id:fixture}]}],outbox:[]});
   setTimeout(()=>{try{render();
    assert(document.querySelector('[data-image] img')!==null,'generated image renders in the conversation');document.querySelector('[data-image]').click();assert(requests.at(-1).action==='openImage','generated image opens through native bridge');

@@ -14,7 +14,7 @@ def main():
     manifest = ET.parse(ROOT/'android/AndroidManifest.xml').getroot()
     ns = '{http://schemas.android.com/apk/res/android}'
     assert manifest.get('package') == 'local.avr.codex'
-    assert manifest.get(ns+'versionName') == '0.6.0'
+    assert manifest.get(ns+'versionName') == '0.6.1'
     provider = manifest.find('application/provider')
     assert provider.get(ns+'exported') == 'false'
     assert provider.get(ns+'grantUriPermissions') == 'true'
@@ -40,7 +40,7 @@ def main():
         raise RuntimeError('Node.js is required for JavaScript syntax checks')
     for js in [ROOT/'android/assets/ui/chat.js', ROOT/'tests/ui.test.js']:
         subprocess.run([node,'--check',str(js)],check=True)
-    print(json.dumps({'status':'PASS','public_source_files':len(public_files),'version':'0.6.0'}))
+    print(json.dumps({'status':'PASS','public_source_files':len(public_files),'version':'0.6.1'}))
 
 
 if __name__ == '__main__':
