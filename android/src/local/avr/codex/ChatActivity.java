@@ -76,7 +76,7 @@ public class ChatActivity extends Activity {
         LinearLayout header=new LinearLayout(this);header.setGravity(Gravity.CENTER_VERTICAL);header.setPadding(dp(10),dp(4),dp(10),dp(2));
         header.addView(icon("menu","Открыть историю чатов",this::showDrawer),new LinearLayout.LayoutParams(dp(44),dp(44)));
         title=button("Codex  ⌄",this::chooseModel);title.setTextSize(19);title.setGravity(Gravity.START|Gravity.CENTER_VERTICAL);title.setBackgroundColor(Color.TRANSPARENT);title.setMaxLines(1);title.setEllipsize(TextUtils.TruncateAt.END);header.addView(title,new LinearLayout.LayoutParams(0,dp(48),1));
-        header.addView(icon("new","Новый чат",()->{if(available()&&!agent.busy){agent.newThread();resetCards();render();}}),new LinearLayout.LayoutParams(dp(44),dp(44)));
+        header.addView(icon("new","Новый чат",()->{if(available()){agent.newThread();resetCards();render();}}),new LinearLayout.LayoutParams(dp(44),dp(44)));
         account=button("Войти",this::accountMenu);account.setTextSize(12);account.setSingleLine(true);account.setContentDescription("Аккаунт ChatGPT");header.addView(account,new LinearLayout.LayoutParams(dp(76),dp(36)));root.addView(header);
         status=text("Подключаюсь к телефону…",11,MUTED);status.setPadding(dp(22),0,dp(22),dp(5));root.addView(status,new LinearLayout.LayoutParams(-1,dp(28)));
         scroll=new ScrollView(this);scroll.setFillViewport(true);scroll.setClipToPadding(false);content=new LinearLayout(this);content.setOrientation(LinearLayout.VERTICAL);content.setPadding(dp(20),dp(18),dp(20),dp(24));scroll.addView(content);root.addView(scroll,new LinearLayout.LayoutParams(-1,0,1));
@@ -95,12 +95,12 @@ public class ChatActivity extends Activity {
         Intent service=new Intent(this,AgentService.class);startForegroundService(service);bound=bindService(service,connection,BIND_AUTO_CREATE);
     }
     boolean available(){return agent!=null&&agent.ready;}
-    void updateSend(){boolean has=input.length()>0,busy=agent!=null&&agent.busy;send.setVisibility(has||busy?View.VISIBLE:View.GONE);voiceButton.setVisibility(!has&&!busy?View.VISIBLE:View.GONE);send.setImageDrawable(new Glyph(busy&&!has?"stop":"send",BG));send.setEnabled(available());}
+    void updateSend(){boolean has=input.length()>0,busy=agent!=null&&agent.chat.busy;send.setVisibility(has||busy?View.VISIBLE:View.GONE);voiceButton.setVisibility(!has&&!busy?View.VISIBLE:View.GONE);send.setImageDrawable(new Glyph(busy&&!has?"stop":"send",BG));send.setEnabled(available());}
     void resetCards(){cards.clear();content.removeAllViews();welcome=null;}
     void render(){
         if(agent==null)return;status.setText(agent.state);account.setText(agent.loggedIn?"●":"Войти");title.setText((agent.model.isEmpty()?"Codex":agent.model)+"  ⌄");effort.setText("Думать: "+effortName(agent.effort)+"  ⌄");updateSend();
-        if(!lastThread.equals(agent.threadId)){lastThread=agent.threadId;resetCards();}
-        if(agent.messages.isEmpty()){
+        if(!lastThread.equals(agent.chat.id)){lastThread=agent.chat.id;resetCards();}
+        if(agent.chat.messages.isEmpty()){
             if(welcome==null){resetCards();welcome=new LinearLayout(this);welcome.setOrientation(LinearLayout.VERTICAL);welcome.setGravity(Gravity.CENTER);LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-1,-1);content.addView(welcome,lp);
                 TextView hero=text("Чем могу помочь?",27,TEXT);hero.setTypeface(null,Typeface.BOLD);hero.setGravity(Gravity.CENTER);welcome.addView(hero);space(welcome,16);
                 TextView desc=text("Приложения, файлы и контейнеры\nна твоём телефоне",14,MUTED);desc.setGravity(Gravity.CENTER);desc.setLineSpacing(dp(3),1);welcome.addView(desc);space(welcome,28);
@@ -109,9 +109,9 @@ public class ChatActivity extends Activity {
             }
         }else{
             if(welcome!=null){content.removeView(welcome);welcome=null;}
-            if(cards.keySet().stream().anyMatch(k->!agent.messages.containsKey(k)))resetCards();
+            if(cards.keySet().stream().anyMatch(k->!agent.chat.messages.containsKey(k)))resetCards();
             boolean bottom=scroll.getChildAt(0).getHeight()-scroll.getScrollY()-scroll.getHeight()<dp(180);
-            for(AgentService.Message m:agent.messages.values()){
+            for(AgentService.Message m:agent.chat.messages.values()){
                 TextView card=cards.get(m.id);
                 if(card==null){
                     LinearLayout holder=new LinearLayout(this);holder.setOrientation(LinearLayout.VERTICAL);LinearLayout.LayoutParams hp=new LinearLayout.LayoutParams(m.kind.equals("user")?-2:-1,-2);hp.gravity=m.kind.equals("user")?Gravity.END:Gravity.START;hp.bottomMargin=dp(24);content.addView(holder,hp);
@@ -132,14 +132,13 @@ public class ChatActivity extends Activity {
             if(bottom)scroll.post(()->scroll.fullScroll(View.FOCUS_DOWN));
         }
         updateDrawer();
-        voice.sync(agent.busy,agent.completedTurns,agent.lastAnswer,!agent.approvals.isEmpty());
+        voice.sync(agent.chat.busy,agent.chat.completedTurns,agent.chat.lastAnswer,agent.currentApproval()!=null);
         if(mute!=null)mute.setText(voice.muted()?"Включить микрофон":"Микрофон включён");
         showPendingLogin();
-        if(foreground&&!agent.approvals.isEmpty())showApproval(agent.approvals.get(0));
-        if(agent.approvals.isEmpty()&&approvalDialog!=null){approvalDialog.dismiss();approvalDialog=null;shownApproval="";}
+        renderApproval();
     }
     void copy(String text){((android.content.ClipboardManager)getSystemService(CLIPBOARD_SERVICE)).setPrimaryClip(ClipData.newPlainText("Codex",text));}
-    void send(){if(agent==null)return;if(!agent.loggedIn){accountMenu();return;}String body=input.getText().toString().trim();if(body.isEmpty()){if(agent.busy)agent.interrupt();return;}if(agent.busy){new AlertDialog.Builder(this).setTitle("Отправить сообщение").setItems(new String[]{"В очередь","Уточнить сейчас"},(d,i)->{if(agent.submitText(body,i==1?"steer":"queue"))input.setText("");}).show();return;}if(agent.submitText(body,"queue")){input.setText("");((InputMethodManager)getSystemService(INPUT_METHOD_SERVICE)).hideSoftInputFromWindow(input.getWindowToken(),0);}}
+    void send(){if(agent==null)return;if(!agent.loggedIn){accountMenu();return;}String body=input.getText().toString().trim();if(body.isEmpty()){if(agent.chat.busy)agent.interrupt();return;}if(agent.chat.busy){new AlertDialog.Builder(this).setTitle("Отправить сообщение").setItems(new String[]{"В очередь","Уточнить сейчас"},(d,i)->{if(agent.submitText(body,i==1?"steer":"queue"))input.setText("");}).show();return;}if(agent.submitText(body,"queue")){input.setText("");((InputMethodManager)getSystemService(INPUT_METHOD_SERVICE)).hideSoftInputFromWindow(input.getWindowToken(),0);}}
     String effortName(String value){switch(value){case "":return "авто";case "none":return "без размышлений";case "minimal":return "минимально";case "low":return "низкое";case "medium":return "среднее";case "high":return "высокое";case "xhigh":return "очень высокое";case "max":return "максимум";case "ultra":return "ультра";default:return value;}}
     void chooseEffort(){
         if(!available())return;JSONObject m=agent.selectedModel();JSONArray options=m==null?null:m.optJSONArray("supportedReasoningEfforts");
@@ -153,7 +152,7 @@ public class ChatActivity extends Activity {
         new AlertDialog.Builder(this).setTitle("Модель").setSingleChoiceItems(names.toArray(new String[0]),values.indexOf(agent.model),(d,i)->{agent.selectModel(values.get(i));d.dismiss();}).setNegativeButton("Закрыть",null).show();
     }
     void showDrawer(){
-        if(!available())return;if(agent.busy){Toast.makeText(this,"Останови текущий ответ или дождись его завершения",Toast.LENGTH_SHORT).show();return;}
+        if(!available())return;
         drawer=new Dialog(this);LinearLayout panel=new LinearLayout(this);panel.setOrientation(LinearLayout.VERTICAL);panel.setBackgroundColor(0xff202020);pad(panel,18);
         Button fresh=button("＋  Новый чат",()->{agent.newThread();drawer.dismiss();});panel.addView(fresh,new LinearLayout.LayoutParams(-1,dp(48)));space(panel,12);
         EditText search=new EditText(this);search.setHint("Поиск чатов");search.setHintTextColor(MUTED);search.setTextColor(TEXT);search.setTextSize(15);search.setSingleLine(true);search.setBackground(shape(PANEL,15));pad(search,12);panel.addView(search,new LinearLayout.LayoutParams(-1,dp(48)));space(panel,16);
@@ -165,7 +164,7 @@ public class ChatActivity extends Activity {
         drawer.setContentView(panel);Window w=drawer.getWindow();if(w!=null){w.setBackgroundDrawableResource(android.R.color.transparent);w.setGravity(Gravity.START);w.addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);w.setDimAmount(.5f);}
         drawer.show();w.setLayout((int)(getResources().getDisplayMetrics().widthPixels*.88),-1);agent.queryThreads("",false);updateDrawer();
     }
-    void updateDrawer(){if(drawer==null||!drawer.isShowing()||chatAdapter==null||agent==null)return;shownChats.clear();chatAdapter.clear();for(int i=0;i<agent.threads.length();i++){JSONObject t=agent.threads.optJSONObject(i);shownChats.add(t);String n=t.optString("name");if(n.isEmpty()||n.equals("null"))n=t.optString("preview","Новый чат");chatAdapter.add(n.isEmpty()?"Новый чат":n);}chatAdapter.notifyDataSetChanged();}
+    void updateDrawer(){if(drawer==null||!drawer.isShowing()||chatAdapter==null||agent==null)return;shownChats.clear();chatAdapter.clear();JSONArray list=agent.chatList();for(int i=0;i<list.length();i++){JSONObject t=list.optJSONObject(i);shownChats.add(t);String n=t.optString("name");if(n.isEmpty()||n.equals("null"))n=t.optString("preview","Новый чат");chatAdapter.add(n.isEmpty()?"Новый чат":n);}chatAdapter.notifyDataSetChanged();}
     void chatActions(JSONObject thread){
         String id=thread.optString("id");new AlertDialog.Builder(this).setItems(new String[]{"Переименовать","Архивировать","Удалить чат"},(d,i)->{
             if(i==0){EditText name=new EditText(this);name.setText(thread.optString("name",thread.optString("preview")));new AlertDialog.Builder(this).setTitle("Название чата").setView(name).setPositiveButton("Сохранить",(x,z)->agent.renameThread(id,name.getText().toString())).setNegativeButton("Отмена",null).show();}
@@ -202,25 +201,31 @@ public class ChatActivity extends Activity {
     }
     @Override public void onRequestPermissionsResult(int code,String[] names,int[] results){super.onRequestPermissionsResult(code,names,results);if(code==31&&results.length>0&&results[0]==PackageManager.PERMISSION_GRANTED)startVoice(pendingVoice);}
     void startVoice(boolean continuous){
-        if(!continuous){voice.begin(false,agent==null?0:agent.completedTurns);return;}
+        if(!continuous){voice.begin(false,agent==null?0:agent.chat.completedTurns);return;}
         voiceDialog=new Dialog(this,android.R.style.Theme_Material_NoActionBar);LinearLayout panel=new LinearLayout(this);panel.setOrientation(LinearLayout.VERTICAL);panel.setGravity(Gravity.CENTER_HORIZONTAL);panel.setBackgroundColor(BG);panel.setPadding(dp(24),dp(42),dp(24),dp(34));
         TextView label=text("Голосовой режим",18,TEXT);label.setGravity(Gravity.CENTER);panel.addView(label);space(panel,12);
         voiceCaption=text("Говори, что нужно сделать на телефоне",14,MUTED);voiceCaption.setGravity(Gravity.CENTER);voiceCaption.setMaxLines(5);panel.addView(voiceCaption,new LinearLayout.LayoutParams(-1,dp(100)));
-        FrameLayout middle=new FrameLayout(this);orb=new OrbView();FrameLayout.LayoutParams op=new FrameLayout.LayoutParams(dp(230),dp(230),Gravity.CENTER);middle.addView(orb,op);panel.addView(middle,new LinearLayout.LayoutParams(-1,0,1));orb.setOnClickListener(v->{if(agent.busy)agent.interrupt();voice.retry();});
+        FrameLayout middle=new FrameLayout(this);orb=new OrbView();FrameLayout.LayoutParams op=new FrameLayout.LayoutParams(dp(230),dp(230),Gravity.CENTER);middle.addView(orb,op);panel.addView(middle,new LinearLayout.LayoutParams(-1,0,1));orb.setOnClickListener(v->{if(agent.chat.busy)agent.interrupt();voice.retry();});
         voiceState=text("Подключаюсь…",16,TEXT);voiceState.setGravity(Gravity.CENTER);voiceState.setMaxLines(4);panel.addView(voiceState,new LinearLayout.LayoutParams(-1,dp(90)));
         mute=button("Микрофон включён",()->{voice.toggleMute();mute.setText(voice.muted()?"Включить микрофон":"Микрофон включён");});panel.addView(mute,new LinearLayout.LayoutParams(-1,dp(48)));space(panel,12);
         Button close=button("Завершить",()->voiceDialog.dismiss());panel.addView(close,new LinearLayout.LayoutParams(-1,dp(48)));
-        voiceDialog.setContentView(panel);voiceDialog.setOnDismissListener(d->{voice.close();voiceState=null;voiceCaption=null;mute=null;orb=null;voiceDialog=null;});voiceDialog.show();voiceDialog.getWindow().setLayout(-1,-1);voice.begin(true,agent.completedTurns);
+        voiceDialog.setContentView(panel);voiceDialog.setOnDismissListener(d->{voice.close();voiceState=null;voiceCaption=null;mute=null;orb=null;voiceDialog=null;});voiceDialog.show();voiceDialog.getWindow().setLayout(-1,-1);voice.begin(true,agent.chat.completedTurns);
+    }
+    void renderApproval(){
+        JSONObject request=agent.currentApproval();
+        String id=request==null?"":String.valueOf(request.opt("id"));
+        if(!shownApproval.equals(id)&&approvalDialog!=null){approvalDialog.dismiss();approvalDialog=null;shownApproval="";}
+        if(foreground&&request!=null)showApproval(request);
     }
     void showApproval(JSONObject request){
         String id=String.valueOf(request.opt("id"));if(id.equals(shownApproval))return;shownApproval=id;JSONObject p=request.optJSONObject("params");String method=request.optString("method");
         if(method.equals("item/tool/requestUserInput")){
             LinearLayout form=new LinearLayout(this);form.setOrientation(LinearLayout.VERTICAL);pad(form,20);HashMap<String,EditText> fields=new HashMap<>();JSONArray qs=p.optJSONArray("questions");
             if(qs!=null)for(int i=0;i<qs.length();i++){JSONObject q=qs.optJSONObject(i);form.addView(text(q.optString("question"),16,TEXT));JSONArray opts=q.optJSONArray("options");if(opts!=null){StringBuilder hints=new StringBuilder();for(int k=0;k<opts.length();k++)hints.append("• ").append(opts.optJSONObject(k).optString("label")).append('\n');form.addView(text(hints.toString(),13,MUTED));}EditText answer=new EditText(this);answer.setHint("Ответ");form.addView(answer);fields.put(q.optString("id"),answer);}
-            approvalDialog=new AlertDialog.Builder(this).setTitle("Вопрос Codex").setView(form).setCancelable(false).setPositiveButton("Ответить",(d,w)->{JSONObject answers=new JSONObject();for(String key:fields.keySet())try{answers.put(key,AgentService.j("answers",new JSONArray().put(fields.get(key).getText().toString())));}catch(JSONException ignored){}agent.answer(request,AgentService.j("answers",answers));shownApproval="";}).setNegativeButton("Остановить",(d,w)->{agent.interrupt();shownApproval="";}).show();return;
+            approvalDialog=new AlertDialog.Builder(this).setTitle("Вопрос Codex · "+agent.approvalTitle(request)).setView(form).setCancelable(false).setPositiveButton("Ответить",(d,w)->{JSONObject answers=new JSONObject();for(String key:fields.keySet())try{answers.put(key,AgentService.j("answers",new JSONArray().put(fields.get(key).getText().toString())));}catch(JSONException ignored){}agent.answer(request,AgentService.j("answers",answers));shownApproval="";}).setNegativeButton("Остановить",(d,w)->{agent.interruptApproval(request);}).show();return;
         }
-        String detail=p.optString("command",p.optString("reason","Изменения файлов"));AgentService.Message item=agent.messages.get(p.optString("itemId"));if(item!=null)detail=item.text;TextView preview=text(detail,13,TEXT);preview.setTypeface(Typeface.MONOSPACE);pad(preview,20);preview.setTextIsSelectable(true);ScrollView box=new ScrollView(this);box.addView(preview);
-        approvalDialog=new AlertDialog.Builder(this).setTitle("Разрешить действие?").setView(box).setCancelable(false).setPositiveButton("Разрешить один раз",(d,w)->{agent.answer(request,AgentService.j("decision","accept"));shownApproval="";}).setNegativeButton("Отклонить",(d,w)->{agent.answer(request,AgentService.j("decision","decline"));shownApproval="";}).show();
+        String detail=p.optString("command",p.optString("reason","Изменения файлов"));AgentService.Message item=agent.approvalMessage(request);if(item!=null)detail=item.text;TextView preview=text(detail,13,TEXT);preview.setTypeface(Typeface.MONOSPACE);pad(preview,20);preview.setTextIsSelectable(true);ScrollView box=new ScrollView(this);box.addView(preview);
+        approvalDialog=new AlertDialog.Builder(this).setTitle("Разрешить действие? · "+agent.approvalTitle(request)).setView(box).setCancelable(false).setPositiveButton("Разрешить один раз",(d,w)->{agent.answer(request,AgentService.j("decision","accept"));shownApproval="";}).setNegativeButton("Отклонить",(d,w)->{agent.answer(request,AgentService.j("decision","decline"));shownApproval="";}).show();
     }
     static CharSequence markdown(String raw){
         SpannableStringBuilder out=new SpannableStringBuilder();boolean code=false;int codeStart=0;

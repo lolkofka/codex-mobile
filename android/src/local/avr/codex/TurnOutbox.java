@@ -7,7 +7,7 @@ final class TurnOutbox {
     static final class Entry {
         final String id,text,model,effort;
         String thread,mode,status="waiting",error="";
-        String images="[]";
+        String images="[]", files="[]";
         Entry(String id,String text,String thread,String mode,String model,String effort){
             this.id=id;this.text=text;this.thread=thread;this.mode=mode;this.model=model;this.effort=effort;
         }

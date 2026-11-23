@@ -1,6 +1,6 @@
 'use strict';
 const checks=[],requests=[];
-window.Phone={post(source){const p=JSON.parse(source);requests.push(p);if(p.action==='send')window.submissionResult({accepted:true,value:p.value});}};
+window.Phone={post(source){const p=JSON.parse(source);requests.push(p);if(p.action==='send')window.submissionResult({accepted:true,value:p.value,chatKey:p.chatKey});}};
 const assert=(value,message)=>{if(!value)throw new Error(message);checks.push(message);};
 const clickOption=text=>Array.from(document.querySelectorAll('#sheet-content .option')).find(b=>b.querySelector('strong')?.textContent===text).click();
 window.addEventListener('error',e=>{const p=document.createElement('pre');p.id='test-failure';p.textContent=e.message;document.body.append(p);});
@@ -8,8 +8,13 @@ setTimeout(()=>{
  try{
   document.documentElement.style.width='360px';$('app').style.width='360px';
   const fixture='00000000-0000-0000-0000-000000000001.png';
-  applyState({replace:true,ready:true,busy:false,loggedIn:true,model:'test-model',effort:'high',status:'Готов',account:'Тест',target:'phone',models:[{id:'test-model',model:'test-model',displayName:'Тестовая модель',isDefault:true,supportedReasoningEfforts:[{reasoningEffort:'high'}]}],order:[],updates:[],outbox:[],modelsLoading:false,modelsError:''});
+  const file={id:'00000000-0000-0000-0000-000000000002',name:'Отчёт <ноябрь>.pdf'};
+  applyState({replace:true,ready:true,busy:false,loggedIn:true,chatKey:'first-view',chatId:'first',model:'test-model',effort:'high',status:'Готов',account:'Тест',target:'phone',models:[{id:'test-model',model:'test-model',displayName:'Тестовая модель',isDefault:true,supportedReasoningEfforts:[{reasoningEffort:'high'}]}],order:[],updates:[],outbox:[],modelsLoading:false,modelsError:''});
   $('attach').click();clickOption('Выбрать из галереи');assert(requests.at(-1).action==='pickImages','gallery opens via native bridge');
+  $('attach').click();clickOption('Выбрать файлы');assert(requests.at(-1).action==='pickFiles','system file picker opens via native bridge');
+  setAttachments({attachments:[file],loading:false});
+  assert($('attachments').textContent.includes(file.name)&&!$('attachments').querySelector('img'),'file name renders as literal text');
+  $('send').click();assert(requests.at(-1).action==='send'&&requests.at(-1).value===''&&requests.at(-1).chatKey==='first-view','a file-only message is sent to the displayed chat');
   $('attach').click();clickOption('Вставить из буфера');assert(requests.at(-1).action==='pasteClipboard','clipboard import uses native bridge');
   $('attach').click();clickOption('Создать изображение');assert($('prompt').value.startsWith('Создай изображение:'),'image generation prompt is editable');$('prompt').value='';
   setAttachments({images:[{id:fixture,url:'media-fixture.png'}],loading:false});assert(!$('send').hidden&&!$('send').disabled,'image-only message can be sent');$('send').click();assert(requests.some(r=>r.action==='send'&&r.value===''),'image-only submission reaches native bridge');
@@ -27,9 +32,21 @@ setTimeout(()=>{
   openSheet('account');clickOption('Получить новый код');assert(requests.at(-1).action==='restartLoginDevice','new code uses explicit cancellation path');
   applyState({loginPending:false,loginWorking:true,loginError:''});openSheet('account');assert(document.querySelector('#sheet-content .option').disabled,'parallel login is disabled while preparing');closeSheet();
   applyState({loggedIn:true,loginWorking:false});
-  applyState({replace:true,ready:true,busy:true,loggedIn:true,status:'Codex работает…',order:['generated'],updates:[{id:'generated',kind:'image',text:'Изображение готово',complete:true,images:[{id:fixture}]}],outbox:[]});
+  applyState({replace:true,ready:true,busy:true,loggedIn:true,status:'Codex работает…',order:['doc','generated'],updates:[{id:'doc',kind:'user',text:'',files:[file]},{id:'generated',kind:'image',text:'Изображение готово',complete:true,images:[{id:fixture}]}],outbox:[{id:'queued',text:'Ожидает',status:'waiting'}],threads:[{id:'other',name:'Второй чат',busy:true},{id:'first',name:'Первый чат',busy:true,pinned:true}]});
   setTimeout(()=>{try{render();
    assert(document.querySelector('[data-image] img')!==null,'generated image renders in the conversation');document.querySelector('[data-image]').click();assert(requests.at(-1).action==='openImage','generated image opens through native bridge');
+   document.querySelector('[data-open-attachment]').click();assert(requests.at(-1).action==='openAttachment'&&requests.at(-1).value===file.id,'sent file opens through the native bridge');
+   $('menu').click();
+   const rows=Array.from(document.querySelectorAll('.chat-row'));
+   assert(rows[0].textContent.startsWith('Первый чат')&&rows[0].querySelector('[aria-current]'),'pinned chat appears above other chats and the active chat is marked');
+   assert(document.querySelectorAll('.chat-working').length===2,'all working chats are identified');
+   rows[0].querySelector('.icon-button').click();clickOption('Открепить чат');
+   assert(requests.at(-1).action==='pinChat'&&requests.at(-1).value==='first','pin toggle targets the chosen chat');
+   rows[1].querySelector('.icon-button').click();clickOption('Закрепить чат');
+   assert(requests.at(-1).action==='pinChat'&&requests.at(-1).value==='other','unpinned chat can be pinned');
+   rows[1].firstElementChild.click();
+   assert(requests.at(-1).action==='openChat'&&requests.at(-1).value==='other','a different chat can open while a turn and queue are active');
+   $('new-chat').click();assert(requests.at(-1).action==='newChat','a new chat can open while another turn is active');
    $('prompt').value='Уточнение';$('prompt').dispatchEvent(new Event('input'));$('delivery-button').click();clickOption('Уточнить сейчас');$('send').click();assert(requests.some(r=>r.action==='send'&&r.mode==='steer'),'steering remains available with attachment controls');
    $('account-button').click();clickOption('Уведомления о задачах');assert(requests.at(-1).action==='notificationSettings','notification controls open Android settings');
    const report=document.createElement('pre');report.id='test-report';report.hidden=true;report.textContent=JSON.stringify({status:'PASS',checks},null,2);document.body.append(report);

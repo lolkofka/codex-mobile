@@ -35,7 +35,7 @@ final class MediaFiles {
         if(!value.startsWith("/")||value.indexOf('\0')>=0||value.indexOf('\n')>=0)throw new IOException("Нужен абсолютный путь на телефоне");
         return value;
     }
-    static String mime(String path){String ext=MimeTypeMap.getFileExtensionFromUrl(path).toLowerCase(Locale.ROOT);String m=MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext);return m==null?"application/octet-stream":m;}
+    static String mime(String path){String name=new File(path).getName();int dot=name.lastIndexOf('.');String ext=dot<0?"":name.substring(dot+1).toLowerCase(Locale.ROOT);String m=MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext);return m==null?"application/octet-stream":m;}
     static byte[] rootRead(String path,int limit)throws Exception{
         Process p=new ProcessBuilder("su","-c","test -f "+quote(path)+" && cat -- "+quote(path)).start();
         java.util.concurrent.ExecutorService reader=java.util.concurrent.Executors.newSingleThreadExecutor();
