@@ -60,7 +60,7 @@ python tests/run_host_tests.py
 
 ```console
 python tools/build_native_tests.py --sdk /path/to/android-sdk
-adb -s SERIAL install -r dist/Codex-Mobile-0.6.6-copy.apk
+adb -s SERIAL install -r dist/Codex-Mobile-0.6.7-copy.apk
 adb -s SERIAL install -r dist/Codex-Mobile-tests.apk
 adb -s SERIAL shell am instrument -w -r -e media true local.avr.codex.copy.tests/local.avr.codex.copy.MobileFeatureTests
 adb -s SERIAL uninstall local.avr.codex.copy.tests

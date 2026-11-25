@@ -1,4 +1,4 @@
-"""Check the login lifecycle without a phone, network, or stored credentials."""
+"""Check login, network and chat ordering without stored credentials."""
 from pathlib import Path
 import os
 import shutil
@@ -18,8 +18,9 @@ def main():
     subprocess.run([java_tool('javac'), '-encoding', 'UTF-8', '-d', str(out),
                     str(ROOT/'android/src/local/avr/codex/LoginFlow.java'),
                     str(ROOT/'android/src/local/avr/codex/EngineNetworkProxy.java'),
+                    str(ROOT/'android/src/local/avr/codex/ChatRecency.java'),
                     *map(str, (ROOT/'tests/host').glob('*.java'))], check=True)
-    for name in ['LoginFlowTest', 'EngineNetworkProxyTest']:
+    for name in ['LoginFlowTest', 'EngineNetworkProxyTest', 'ChatRecencyTest']:
         subprocess.run([java_tool('java'), '-cp', str(out), 'local.avr.codex.copy.'+name], check=True, timeout=30)
 
 

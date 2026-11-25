@@ -173,6 +173,62 @@ public final class MobileFeatureTests extends Instrumentation {
         pass("pin order, persistence and unpin outside the first history page");
     }
 
+    String chatIds(){
+        JSONArray rows=fake.chatList();ArrayList<String> ids=new ArrayList<>();
+        for(int i=0;i<rows.length();i++)ids.add(rows.optJSONObject(i).optString("id"));
+        return String.join(",",ids);
+    }
+    void openFake(String id){
+        main(()->fake.resume(id));
+        JSONObject resume=next("thread/resume");
+        reply(resume,AgentService.j("thread",AgentService.j("id",id,"name",id)));
+        reply(next("thread/turns/list"),AgentService.j("data",new JSONArray()));
+    }
+    void recencyTests()throws Exception{
+        fresh();main(()->{
+            fake.getSharedPreferences("pins",0).edit().clear().commit();
+            fake.getSharedPreferences("chat-recency",0).edit().clear().commit();
+            fake.queryThreads("",false);
+        });
+        JSONObject list=next("thread/list");
+        check(list.optJSONObject("params").optString("sortKey").equals("updated_at"),"thread pages use update time instead of creation time");
+        JSONArray rows=new JSONArray().put(AgentService.j("id","old","name","old","updatedAt",1000))
+            .put(AgentService.j("id","recent","name","recent","updatedAt",2000))
+            .put(AgentService.j("id","pin-a","name","pin-a","updatedAt",1))
+            .put(AgentService.j("id","pin-b","name","pin-b","updatedAt",9000));
+        reply(list,AgentService.j("data",rows,"nextCursor","page-two"));
+        main(()->{fake.togglePin("pin-a");fake.togglePin("pin-b");});
+        check(chatIds().equals("pin-a,pin-b,recent,old"),"server activity sorts only unpinned chats");
+        openFake("old");check(chatIds().equals("pin-a,pin-b,old,recent"),"opening an old chat raises it below existing pins");
+        openFake("pin-b");check(chatIds().equals("pin-a,pin-b,old,recent"),"using a pinned chat preserves pin order");
+        openFake("recent");check(chatIds().equals("pin-a,pin-b,recent,old"),"the last opened unpinned chat rises first");
+        main(()->fake.queryThreads("",true));list=next("thread/list");
+        check(list.optJSONObject("params").optString("cursor").equals("page-two")&&list.optJSONObject("params").optString("sortKey").equals("updated_at"),"pagination keeps update-time ordering");
+        reply(list,AgentService.j("data",new JSONArray().put(AgentService.j("id","page-old","name","page-old","updatedAt",500))));
+        check(chatIds().equals("pin-a,pin-b,recent,old,page-old"),"loading another page preserves local activity and pins");
+        fresh();
+        main(()->{try{
+            for(String method:new String[]{"restorePins","restoreRecency"}){
+                Method restore=AgentService.class.getDeclaredMethod(method);restore.setAccessible(true);restore.invoke(fake);
+            }
+            fake.threads=rows;
+        }catch(Exception e){throw new RuntimeException(e);}});
+        check(chatIds().equals("pin-a,pin-b,recent,old"),"service recreation restores pin and usage order");
+        main(()->{try{
+            Method resume=AgentService.class.getDeclaredMethod("resume",String.class,boolean.class);resume.setAccessible(true);resume.invoke(fake,"old",false);
+        }catch(Exception e){throw new RuntimeException(e);}});
+        reply(next("thread/resume"),AgentService.j("thread",AgentService.j("id","old","name","old")));
+        reply(next("thread/turns/list"),AgentService.j("data",new JSONArray()));
+        check(chatIds().equals("pin-a,pin-b,recent,old"),"automatic restoration does not count as new usage");
+        main(()->fake.submitText("synthetic queue entry","queue"));
+        JSONObject turn=next("turn/start");reply(turn,AgentService.j("turn",AgentService.j("id","activity-turn")));
+        check(chatIds().equals("pin-a,pin-b,old,recent"),"sending in an already open chat raises it immediately");
+        openFake("recent");
+        main(()->fake.handle(AgentService.j("method","turn/completed","params",AgentService.j("threadId","old","turn",AgentService.j("id","activity-turn","status","completed")))));
+        check(chatIds().equals("pin-a,pin-b,old,recent"),"a completed background answer updates activity without moving pins");
+        pass("chat activity sorting, stable pins, opening, sending, background completion, pagination and persistence");
+    }
+
     void mediaTests()throws Exception{
         fresh();
         android.graphics.Bitmap bitmap=android.graphics.Bitmap.createBitmap(80,40,android.graphics.Bitmap.Config.ARGB_8888);bitmap.eraseColor(0xff336699);
@@ -366,7 +422,7 @@ public final class MobileFeatureTests extends Instrumentation {
 
     @Override public void onStart(){
         Bundle result=new Bundle();
-        try{if(migrationOnly)migrationTest();else if(authOnly)authTest();else if(notifyOnly)notificationTest();else if(real)realTests();else{mockTests();parallelChatTests();pinTests();if(media){mediaTests();documentTests();}}result.putString("passed",String.join("; ",passed));result.putString("status","PASS");finish(Activity.RESULT_OK,result);}
+        try{if(migrationOnly)migrationTest();else if(authOnly)authTest();else if(notifyOnly)notificationTest();else if(real)realTests();else{mockTests();parallelChatTests();pinTests();recencyTests();if(media){mediaTests();documentTests();}}result.putString("passed",String.join("; ",passed));result.putString("status","PASS");finish(Activity.RESULT_OK,result);}
         catch(Throwable e){StringWriter s=new StringWriter();e.printStackTrace(new PrintWriter(s));result.putString("failure",s.toString());finish(Activity.RESULT_CANCELED,result);}
     }
 }

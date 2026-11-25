@@ -20,6 +20,7 @@ public final class AgentService extends Service {
     final ConcurrentHashMap<Long, Consumer<String>> failures = new ConcurrentHashMap<>();
     private final Map<String, ChatSession> chats = new LinkedHashMap<>();
     private final LinkedHashMap<String, JSONObject> pins = new LinkedHashMap<>();
+    private final ChatRecency recency = new ChatRecency();
     ChatSession chat = new ChatSession("");
     boolean modelsLoading;
     String modelsError="";
@@ -92,6 +93,7 @@ public final class AgentService extends Service {
         getSharedPreferences("runtime",0).edit().putBoolean("authPending",false).apply();
         restoreOutbox();
         restorePins();
+        restoreRecency();
         notifications=new TaskNotifications(this);startForeground(1,notifications.ongoing());
         phoneAccess=new PhoneAccess(this);
         workerServers=new WorkerServers(this);
@@ -221,7 +223,7 @@ public final class AgentService extends Service {
                         String last=getSharedPreferences("settings",0).getString(lastThreadKey(),"");
                         if(last.isEmpty()&&!chats.isEmpty())last=chats.keySet().iterator().next();
                         if(last.startsWith("draft-")&&!chats.containsKey(last))selectChat(new ChatSession("",last));
-                        else if(!last.isEmpty())resume(last);
+                        else if(!last.isEmpty())resume(last,false);
                         else selectChat(chat);
                         changed();
                     });
@@ -261,6 +263,7 @@ public final class AgentService extends Service {
         getSharedPreferences("runtime",0).edit().putBoolean("connectedToPc",false).apply();
         restoreOutbox();
         restorePins();
+        restoreRecency();
         startEngine();
     }
     private void write(JSONObject message,Consumer<String> failure){
@@ -330,6 +333,7 @@ public final class AgentService extends Service {
                 String id=turn.optString("id");
                 if(id.isEmpty()||id.equals(owner.lastCompletedTurn))return;
                 owner.turnId=id;owner.busy=true;
+                touchChat(owner);
                 owner.finalAnswer="";owner.streamingAnswer="";
                 owner.turnStartedAt=SystemClock.elapsedRealtime();owner.textDeltaCount=0;owner.reasoningDeltaCount=0;
                 if(owner.stopRequested)interrupt(owner);else drainOutbox(owner);
@@ -342,6 +346,7 @@ public final class AgentService extends Service {
                 String id=turn.optString("id"),status=turn.optString("status");
                 if(id.isEmpty()||id.equals(owner.lastCompletedTurn)||(!owner.turnId.isEmpty()&&!id.equals(owner.turnId)))return;
                 owner.lastCompletedTurn=id;owner.busy=false;owner.turnId="";
+                touchChat(owner);
                 owner.lastAnswer=owner.finalAnswer.isEmpty()?owner.streamingAnswer:owner.finalAnswer;
                 owner.completedTurns++;
                 if(owner.turnStartedAt!=0)getSharedPreferences("runtime",0).edit().putInt("textDeltaCount",owner.textDeltaCount).putInt("reasoningDeltaCount",owner.reasoningDeltaCount).putLong("lastTurnDurationMs",SystemClock.elapsedRealtime()-owner.turnStartedAt).apply();
@@ -467,7 +472,7 @@ public final class AgentService extends Service {
         threadSearch=search;
         if(changedSearch){threads=new JSONArray();threadCursor="";changed();}
         long query=++listQuery;
-        JSONObject p=j("limit",50,"sortDirection","desc");
+        JSONObject p=j("limit",50,"sortKey","updated_at","sortDirection","desc");
         try { if(!search.trim().isEmpty())p.put("searchTerm",search.trim());if(more)p.put("cursor",threadCursor); }
         catch(JSONException ignored){}
         request("thread/list",p,r->{
@@ -491,17 +496,19 @@ public final class AgentService extends Service {
         for(JSONObject row:pins.values())if(matchesSearch(row))rows.put(row.optString("id"),row);
         for(int i=0;i<threads.length();i++){
             JSONObject row=threads.optJSONObject(i);
-            rows.put(row.optString("id"),row);
+            if(row!=null)rows.put(row.optString("id"),row);
         }
         for(ChatSession owner:chats.values()){
             JSONObject row=j("id",owner.listId(),"name",owner.title);
-            if((owner.busy||!owner.outbox.entries.isEmpty())&&matchesSearch(row))rows.putIfAbsent(owner.listId(),row);
+            if((owner.busy||!owner.outbox.entries.isEmpty()||(owner.loaded&&recency.time(owner.listId())>0))&&matchesSearch(row))rows.putIfAbsent(owner.listId(),row);
         }
         Set<String> pendingApprovals=new HashSet<>();
         for(JSONObject request:approvals)pendingApprovals.add(request.optJSONObject("params").optString("threadId"));
         JSONArray result=new JSONArray();
-        for(Map.Entry<String,JSONObject> item:rows.entrySet()){
-            String id=item.getKey();JSONObject row=item.getValue();ChatSession owner=chats.get(id);
+        Map<String,Long> updatedAt=new LinkedHashMap<>();
+        for(Map.Entry<String,JSONObject> item:rows.entrySet())updatedAt.put(item.getKey(),ChatRecency.serverTime(item.getValue().optLong("updatedAt",item.getValue().optLong("createdAt"))));
+        for(String id:recency.order(updatedAt,pins.keySet())){
+            JSONObject row=rows.get(id);ChatSession owner=chats.get(id);
             result.put(j("id",id,"name",row.isNull("name")?"":row.optString("name"),"preview",row.optString("preview"),
                 "pinned",pins.containsKey(id),"busy",owner!=null&&owner.busy,"needsApproval",pendingApprovals.contains(id),
                 "draft",owner!=null&&owner.id.isEmpty()));
@@ -540,6 +547,24 @@ public final class AgentService extends Service {
         }catch(JSONException ignored){}
     }
     private String targetKey(){return remoteMode?"pc":"phone";}
+    private void touchChat(ChatSession owner){
+        recency.touch(owner.listId(),System.currentTimeMillis());saveRecency();changed();
+    }
+    private void saveRecency(){
+        JSONArray rows=new JSONArray();
+        for(Map.Entry<String,Long> item:recency.snapshot().entrySet())rows.put(j("id",item.getKey(),"usedAt",item.getValue()));
+        getSharedPreferences("chat-recency",0).edit().putString(targetKey(),rows.toString()).apply();
+    }
+    private void restoreRecency(){
+        recency.clear();
+        try{
+            JSONArray rows=new JSONArray(getSharedPreferences("chat-recency",0).getString(targetKey(),"[]"));
+            for(int i=0;i<rows.length();i++){
+                JSONObject row=rows.getJSONObject(i);String id=row.optString("id");
+                if(id.startsWith("draft-")||canOpen(id))recency.restore(id,row.optLong("usedAt"));
+            }
+        }catch(JSONException ignored){}
+    }
     private boolean canOpen(String id){
         return !id.isEmpty()&&(!remoteMode||getSharedPreferences("settings",0).getStringSet("pcThreads",Collections.emptySet()).contains(id));
     }
@@ -656,7 +681,7 @@ public final class AgentService extends Service {
             String title=text.isEmpty()?"Вложения":text;
             owner.title=title.substring(0,Math.min(title.length(),55));
         }
-        saveOutbox();changed();drainOutbox(owner);return true;
+        touchChat(owner);saveOutbox();changed();drainOutbox(owner);return true;
     }
     private void drainOutbox(ChatSession owner){
         if(!ready||!loggedIn||owner.loading||owner.removing||owner.stopRequested||(!owner.id.isEmpty()&&!owner.loaded))return;
@@ -678,6 +703,7 @@ public final class AgentService extends Service {
         }else startText(owner,entry);
     }
     private void accepted(ChatSession owner,TurnOutbox.Entry entry){
+        touchChat(owner);
         owner.outbox.entries.remove(entry);
         Message message=add(owner.messages,"local-"+entry.id,"user",entry.text);
         message.images=MediaFiles.describeIds(this,entry.images);
@@ -713,7 +739,7 @@ public final class AgentService extends Service {
             JSONObject thread=r.optJSONObject("thread");
             String id=thread==null?"":thread.optString("id");
             if(id.isEmpty()){failure.accept("Движок не вернул идентификатор чата.");return;}
-            chats.remove(owner.draftId);owner.id=id;owner.loaded=true;
+            chats.remove(owner.draftId);recency.bind(owner.draftId,id);saveRecency();owner.id=id;owner.loaded=true;
             owner.cwd=thread.optString("cwd",options.optString("cwd"));
             chats.put(id,owner);owner.outbox.bindThread(id);saveOutbox();rememberPcThread(id);
             if(chat==owner)selectChat(owner);
@@ -821,16 +847,18 @@ public final class AgentService extends Service {
         saveOutbox();changed();drainOutbox(chat);
     }
     void rememberPcThread(String id){if(!remoteMode)return;Set<String> ids=new HashSet<>(getSharedPreferences("settings",0).getStringSet("pcThreads",Collections.emptySet()));ids.add(id);getSharedPreferences("settings",0).edit().putStringSet("pcThreads",ids).apply();}
-    void resume(String id){
+    void resume(String id){resume(id,true);}
+    private void resume(String id,boolean used){
         ChatSession existing=chats.get(id);
         if(existing!=null&&existing.removing)return;
-        if(existing!=null&&(existing.id.isEmpty()||existing.loaded||existing.loading)){selectChat(existing);return;}
+        if(existing!=null&&(existing.id.isEmpty()||existing.loaded||existing.loading)){if(used)touchChat(existing);selectChat(existing);return;}
         if(id.startsWith("draft-"))return;
         if(!canOpen(id)){notice("Здесь открываются отдельные чаты Mobile на ПК.");return;}
         ChatSession owner=existing==null?new ChatSession(id):existing;
         JSONObject p;
         try{p=threadOptions();}catch(IllegalStateException e){notice(e.getMessage());return;}
         chats.put(id,owner);owner.loading=true;selectChat(owner);
+        if(used)touchChat(owner);
         try{p.put("threadId",id);p.put("excludeTurns",true);}catch(JSONException ignored){}
         request("thread/resume",p,r->{
             JSONObject thread=r.optJSONObject("thread");
@@ -863,6 +891,7 @@ public final class AgentService extends Service {
         owner.removing=true;changed();
         request(method,j("threadId",id),r->{
             chats.remove(id);
+            recency.remove(id);saveRecency();
             if(pins.remove(id)!=null)savePins();
             for(int i=threads.length()-1;i>=0;i--)if(id.equals(threads.optJSONObject(i).optString("id")))threads.remove(i);
             if(chat==owner)newThread();
