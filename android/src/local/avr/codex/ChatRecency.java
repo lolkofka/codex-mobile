@@ -2,7 +2,7 @@ package local.avr.codex.copy;
 
 import java.util.*;
 
-/** Local use supplements engine timestamps; pins retain their insertion order. */
+/** Local message activity supplements engine timestamps; pins retain their insertion order. */
 final class ChatRecency {
     private final Map<String,Long> usedAt=new LinkedHashMap<>();
     private long lastTime;

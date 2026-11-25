@@ -223,7 +223,7 @@ public final class AgentService extends Service {
                         String last=getSharedPreferences("settings",0).getString(lastThreadKey(),"");
                         if(last.isEmpty()&&!chats.isEmpty())last=chats.keySet().iterator().next();
                         if(last.startsWith("draft-")&&!chats.containsKey(last))selectChat(new ChatSession("",last));
-                        else if(!last.isEmpty())resume(last,false);
+                        else if(!last.isEmpty())resume(last);
                         else selectChat(chat);
                         changed();
                     });
@@ -553,12 +553,13 @@ public final class AgentService extends Service {
     private void saveRecency(){
         JSONArray rows=new JSONArray();
         for(Map.Entry<String,Long> item:recency.snapshot().entrySet())rows.put(j("id",item.getKey(),"usedAt",item.getValue()));
-        getSharedPreferences("chat-recency",0).edit().putString(targetKey(),rows.toString()).apply();
+        getSharedPreferences("chat-activity",0).edit().putString(targetKey(),rows.toString()).apply();
     }
     private void restoreRecency(){
         recency.clear();
         try{
-            JSONArray rows=new JSONArray(getSharedPreferences("chat-recency",0).getString(targetKey(),"[]"));
+            // 0.6.7 included visits in chat-recency; start with message timestamps only.
+            JSONArray rows=new JSONArray(getSharedPreferences("chat-activity",0).getString(targetKey(),"[]"));
             for(int i=0;i<rows.length();i++){
                 JSONObject row=rows.getJSONObject(i);String id=row.optString("id");
                 if(id.startsWith("draft-")||canOpen(id))recency.restore(id,row.optLong("usedAt"));
@@ -847,18 +848,16 @@ public final class AgentService extends Service {
         saveOutbox();changed();drainOutbox(chat);
     }
     void rememberPcThread(String id){if(!remoteMode)return;Set<String> ids=new HashSet<>(getSharedPreferences("settings",0).getStringSet("pcThreads",Collections.emptySet()));ids.add(id);getSharedPreferences("settings",0).edit().putStringSet("pcThreads",ids).apply();}
-    void resume(String id){resume(id,true);}
-    private void resume(String id,boolean used){
+    void resume(String id){
         ChatSession existing=chats.get(id);
         if(existing!=null&&existing.removing)return;
-        if(existing!=null&&(existing.id.isEmpty()||existing.loaded||existing.loading)){if(used)touchChat(existing);selectChat(existing);return;}
+        if(existing!=null&&(existing.id.isEmpty()||existing.loaded||existing.loading)){selectChat(existing);return;}
         if(id.startsWith("draft-"))return;
         if(!canOpen(id)){notice("Здесь открываются отдельные чаты Mobile на ПК.");return;}
         ChatSession owner=existing==null?new ChatSession(id):existing;
         JSONObject p;
         try{p=threadOptions();}catch(IllegalStateException e){notice(e.getMessage());return;}
         chats.put(id,owner);owner.loading=true;selectChat(owner);
-        if(used)touchChat(owner);
         try{p.put("threadId",id);p.put("excludeTurns",true);}catch(JSONException ignored){}
         request("thread/resume",p,r->{
             JSONObject thread=r.optJSONObject("thread");

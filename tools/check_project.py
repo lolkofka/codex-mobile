@@ -14,7 +14,7 @@ def main():
     manifest = ET.parse(ROOT/'android/AndroidManifest.xml').getroot()
     ns = '{http://schemas.android.com/apk/res/android}'
     assert manifest.get('package') == 'local.avr.codex.copy'
-    assert manifest.get(ns+'versionName') == '0.6.7-copy'
+    assert manifest.get(ns+'versionName') == '0.6.8-copy'
     provider = manifest.find('application/provider')
     assert provider.get(ns+'exported') == 'false'
     assert provider.get(ns+'grantUriPermissions') == 'true'

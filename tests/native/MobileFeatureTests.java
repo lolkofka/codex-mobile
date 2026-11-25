@@ -187,7 +187,9 @@ public final class MobileFeatureTests extends Instrumentation {
     void recencyTests()throws Exception{
         fresh();main(()->{
             fake.getSharedPreferences("pins",0).edit().clear().commit();
-            fake.getSharedPreferences("chat-recency",0).edit().clear().commit();
+            fake.getSharedPreferences("chat-activity",0).edit().clear().commit();
+            fake.getSharedPreferences("chat-recency",0).edit().putString("phone",new JSONArray().put(AgentService.j("id","old","usedAt",System.currentTimeMillis()+60000)).toString()).commit();
+            try{Method restore=AgentService.class.getDeclaredMethod("restoreRecency");restore.setAccessible(true);restore.invoke(fake);}catch(Exception e){throw new RuntimeException(e);}
             fake.queryThreads("",false);
         });
         JSONObject list=next("thread/list");
@@ -198,14 +200,26 @@ public final class MobileFeatureTests extends Instrumentation {
             .put(AgentService.j("id","pin-b","name","pin-b","updatedAt",9000));
         reply(list,AgentService.j("data",rows,"nextCursor","page-two"));
         main(()->{fake.togglePin("pin-a");fake.togglePin("pin-b");});
-        check(chatIds().equals("pin-a,pin-b,recent,old"),"server activity sorts only unpinned chats");
-        openFake("old");check(chatIds().equals("pin-a,pin-b,old,recent"),"opening an old chat raises it below existing pins");
-        openFake("pin-b");check(chatIds().equals("pin-a,pin-b,old,recent"),"using a pinned chat preserves pin order");
-        openFake("recent");check(chatIds().equals("pin-a,pin-b,recent,old"),"the last opened unpinned chat rises first");
+        check(chatIds().equals("pin-a,pin-b,recent,old"),"server activity sorts only unpinned chats; legacy visit timestamps are ignored");
+        openFake("old");check(chatIds().equals("pin-a,pin-b,recent,old"),"opening an old chat leaves its activity order unchanged");
+        int resumes=count("thread/resume");main(()->fake.resume("old"));
+        check(count("thread/resume")==resumes&&chatIds().equals("pin-a,pin-b,recent,old"),"reopening an already loaded chat neither reloads nor raises it");
+        openFake("pin-b");check(chatIds().equals("pin-a,pin-b,recent,old"),"opening a pinned chat preserves pin order");
+        openFake("recent");check(chatIds().equals("pin-a,pin-b,recent,old"),"switching between chats is not message activity");
         main(()->fake.queryThreads("",true));list=next("thread/list");
         check(list.optJSONObject("params").optString("cursor").equals("page-two")&&list.optJSONObject("params").optString("sortKey").equals("updated_at"),"pagination keeps update-time ordering");
         reply(list,AgentService.j("data",new JSONArray().put(AgentService.j("id","page-old","name","page-old","updatedAt",500))));
         check(chatIds().equals("pin-a,pin-b,recent,old,page-old"),"loading another page preserves local activity and pins");
+        main(()->{fake.resume("old");fake.submitText("synthetic old chat message","queue");});
+        JSONObject oldTurn=next("turn/start");reply(oldTurn,AgentService.j("turn",AgentService.j("id","old-activity-turn")));
+        check(chatIds().equals("pin-a,pin-b,old,recent,page-old"),"sending in an already open chat raises it immediately");
+        main(()->fake.resume("recent"));
+        check(chatIds().equals("pin-a,pin-b,old,recent,page-old"),"viewing a different chat leaves the active chat first");
+        main(()->fake.submitText("synthetic recent chat message","queue"));
+        JSONObject recentTurn=next("turn/start");reply(recentTurn,AgentService.j("turn",AgentService.j("id","recent-activity-turn")));
+        check(chatIds().equals("pin-a,pin-b,recent,old,page-old"),"a newer message raises its chat over the previous active chat");
+        main(()->fake.handle(AgentService.j("method","turn/completed","params",AgentService.j("threadId","old","turn",AgentService.j("id","old-activity-turn","status","completed")))));
+        check(fake.chat.id.equals("recent")&&chatIds().equals("pin-a,pin-b,old,recent,page-old"),"a completed background answer raises its chat without changing selection or pins");
         fresh();
         main(()->{try{
             for(String method:new String[]{"restorePins","restoreRecency"}){
@@ -213,20 +227,10 @@ public final class MobileFeatureTests extends Instrumentation {
             }
             fake.threads=rows;
         }catch(Exception e){throw new RuntimeException(e);}});
-        check(chatIds().equals("pin-a,pin-b,recent,old"),"service recreation restores pin and usage order");
-        main(()->{try{
-            Method resume=AgentService.class.getDeclaredMethod("resume",String.class,boolean.class);resume.setAccessible(true);resume.invoke(fake,"old",false);
-        }catch(Exception e){throw new RuntimeException(e);}});
-        reply(next("thread/resume"),AgentService.j("thread",AgentService.j("id","old","name","old")));
-        reply(next("thread/turns/list"),AgentService.j("data",new JSONArray()));
-        check(chatIds().equals("pin-a,pin-b,recent,old"),"automatic restoration does not count as new usage");
-        main(()->fake.submitText("synthetic queue entry","queue"));
-        JSONObject turn=next("turn/start");reply(turn,AgentService.j("turn",AgentService.j("id","activity-turn")));
-        check(chatIds().equals("pin-a,pin-b,old,recent"),"sending in an already open chat raises it immediately");
+        check(chatIds().equals("pin-a,pin-b,old,recent"),"service recreation restores pin and message activity order");
         openFake("recent");
-        main(()->fake.handle(AgentService.j("method","turn/completed","params",AgentService.j("threadId","old","turn",AgentService.j("id","activity-turn","status","completed")))));
-        check(chatIds().equals("pin-a,pin-b,old,recent"),"a completed background answer updates activity without moving pins");
-        pass("chat activity sorting, stable pins, opening, sending, background completion, pagination and persistence");
+        check(chatIds().equals("pin-a,pin-b,old,recent"),"opening after service recreation does not change message activity order");
+        pass("message-only activity sorting, stable pins, no reorder on viewing, legacy visit exclusion, background completion, pagination and persistence");
     }
 
     void mediaTests()throws Exception{
