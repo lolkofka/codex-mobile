@@ -1,0 +1,124 @@
+#!/system/bin/sh
+set -eu
+umask 077
+BASE=/data/adb/avr-codex-copy/tools
+SESSION="$BASE/https/current"
+PHONE=/data/user/0/local.avr.codex.copy/files/phone-access
+HEART="$PHONE/heartbeat.json"
+BB=/data/adb/magisk/busybox
+DOCKER=/data/adb/avr-docker/ctl
+IMAGE=mitmproxy/mitmproxy@sha256:145dabd32b26e8e2c6651a75c01bfd455831d162f276443a7b181d0ced2a7120
+case "${1:-help}" in
+ help|--help)
+  echo 'https PACKAGE SECONDS (10..120): visible, selected-app HTTP/HTTPS inspection, temporary CA, automatic cleanup.'
+  echo 'Requires the traffic toggle and visible Codex notifications. Certificate pinning is never bypassed.'
+  echo 'IPv4 TCP 80/443 only; IPv6 and QUIC may bypass this capture. No permanent CA is installed.'
+  echo 'connections PACKAGE | status | stop'
+  exit 0;;
+ status) [ ! -f "$PHONE/status.json" ] || cat "$PHONE/status.json"; exit 0;;
+ stop)
+  [ -d "$SESSION" ] || exit 0
+  touch "$SESSION/stop"
+  n=0
+  while [ -d "$SESSION" ] && [ "$n" -lt 12 ]; do sleep 1;n=$((n+1));done
+  if [ -d "$SESSION" ]; then "$BASE/https-cleanup"; fi
+  exit 0;;
+esac
+[ -f "$BASE/permissions/traffic" ] || { echo 'Доступ к трафику выключен в Codex Mobile' >&2;exit 1; }
+pkg=${2:-}
+case "$pkg" in ''|*[!A-Za-z0-9_.]*) echo 'Invalid package' >&2;exit 2;; esac
+app_uid=$(pm list packages -U "$pkg" | awk -v target="package:$pkg" '$1==target {sub("uid:","",$2); print $2}')
+case "$app_uid" in ''|*[!0-9]*) echo 'Package not found' >&2;exit 2;; esac
+[ "$app_uid" -ge 10000 ] && [ "$app_uid" -ne 10458 ] || { echo 'Системные UID и сам Codex не перехватываются' >&2;exit 2; }
+shared=$(pm list packages -U | awk -v uid="uid:$app_uid" '$2==uid {count++} END {print count+0}')
+[ "$shared" -eq 1 ] || { echo 'UID общий для нескольких приложений; адресный перехват невозможен' >&2;exit 2; }
+if [ "$1" = connections ]; then
+ echo "Package=$pkg UID=$app_uid"
+ for network in tcp tcp6 udp udp6; do
+  [ ! -r "/proc/net/$network" ] || awk -v uid="$app_uid" -v proto="$network" 'NR==1 || $8==uid {print proto,$0}' "/proc/net/$network"
+ done
+ exit 0
+fi
+[ "$1" = https ] || exit 2
+seconds=${3:-30}
+case "$seconds" in ''|*[!0-9]*) exit 2;; esac
+[ "$seconds" -ge 10 ] && [ "$seconds" -le 120 ] || { echo 'Use 10..120 seconds' >&2;exit 2; }
+now=$(date +%s)
+modified=$(stat -c %Y "$HEART" 2>/dev/null || echo 0)
+[ $((now-modified)) -le 5 ] && grep -q '"notificationsVisible":true' "$HEART" || { echo 'Открой Codex и разреши уведомления: скрытый HTTPS-доступ запрещён' >&2;exit 1; }
+grep -q '"trafficAllowed":true' "$HEART" || { echo 'Доступ к трафику выключен в приложении' >&2;exit 1; }
+mkdir -p "$BASE/https"
+mkdir "$SESSION" 2>/dev/null || { echo 'Другой сеанс активен. Используй stop.' >&2;exit 1; }
+trap '"$BASE/https-cleanup" "${ident:-}"' EXIT
+trap 'exit 130' INT TERM HUP
+ident="session-$now-$$"
+deadline=$((now+seconds+25))
+echo "$ident" > "$SESSION/id"
+echo "$$" > "$SESSION/pid"
+echo "$app_uid" > "$SESSION/uid"
+echo "$pkg" > "$SESSION/package"
+echo "$deadline" > "$SESSION/deadline"
+mkdir "$SESSION/mounts"
+work="/data/adb/avr-docker/rootfs/workspace/codex-mobile-https/sessions/$ident"
+linux_work="/workspace/codex-mobile-https/sessions/$ident"
+echo "$work" > "$SESSION/work"
+mkdir -p "$work/results" "$work/trust"
+printf '{"active":true,"mode":"https","id":"%s","package":"%s","phase":"preparing","expires":%s000}\n' "$ident" "$pkg" "$deadline" > "$PHONE/status.json.tmp"
+chown 10458:10458 "$PHONE/status.json.tmp"
+mv "$PHONE/status.json.tmp" "$PHONE/status.json"
+restorecon -F "$PHONE/status.json" >/dev/null 2>&1
+"$BB" setsid /system/bin/sh "$BASE/https-watchdog" </dev/null >/dev/null 2>&1 &
+# Wait for the app to acknowledge that the ongoing notification is visible.
+n=0
+until grep -q "\"notifiedSession\":\"$ident\"" "$HEART"; do
+ n=$((n+1));[ "$n" -lt 7 ] || { echo 'Уведомление не подтверждено; доступ не начат' >&2;exit 1; };sleep 1
+done
+cp "$BASE/prepare_ca.py" "$BASE/capture_addon.py" "$work/"
+"$DOCKER" run --rm --user 0 --cap-drop ALL --network none --mount "type=bind,src=$linux_work,dst=/session" --entrypoint python "$IMAGE" /session/prepare_ca.py > "$SESSION/prepare.log" 2>&1
+read -r cert_name < "$work/ca-name"
+case "$cert_name" in ????????.0) ;; *) echo 'Invalid CA name' >&2;exit 1;; esac
+cp -a /apex/com.android.conscrypt/cacerts/. "$work/trust/"
+cp "$work/ca/mitmproxy-ca-cert.pem" "$work/trust/$cert_name"
+touch "$work/trust/.codex-$ident"
+chmod 755 "$work/trust"
+chmod 644 "$work/trust"/*
+chcon -R u:object_r:system_security_cacerts_file:s0 "$work/trust"
+ps -A -o PID,UID | awk -v uid="$app_uid" '$2==uid {print $1}' > "$SESSION/pids"
+[ -s "$SESSION/pids" ] || { echo 'Сначала запусти выбранное приложение в фоне через codex-apps' >&2;exit 1; }
+root_ns=$(readlink /proc/1/ns/mnt)
+while read -r target; do
+ [ -d "/proc/$target" ] || continue
+ target_ns=$(readlink "/proc/$target/ns/mnt")
+ [ "$target_ns" != "$root_ns" ] || { echo 'У приложения нет отдельного mount namespace; отмена' >&2;exit 1; }
+ "$BB" nsenter -t "$target" -m "$BB" mount --make-rprivate /
+ "$BB" nsenter -t "$target" -m "$BB" mount --bind "$work/trust" /apex/com.android.conscrypt/cacerts
+ touch "$SESSION/mounts/$target"
+ "$BB" nsenter -t "$target" -m "$BB" mount -o remount,bind,ro /apex/com.android.conscrypt/cacerts
+done < "$SESSION/pids"
+"$DOCKER" container rm -f codex-copy-https-proxy >/dev/null 2>&1 || true
+"$DOCKER" run -d --name codex-copy-https-proxy --user 0 --cap-drop ALL --network host --read-only --tmpfs /tmp --mount "type=bind,src=$linux_work,dst=/session" --entrypoint mitmdump "$IMAGE" --mode transparent --listen-host 127.0.0.1 --listen-port 18081 --set confdir=/session/ca --set connection_strategy=lazy --set stream_large_bodies=64k --set flow_detail=0 -s /session/capture_addon.py > "$SESSION/container" 2> "$SESSION/proxy-error.log"
+n=0
+until ss -ltn | grep -q '127.0.0.1:18081'; do
+ n=$((n+1));[ "$n" -lt 30 ] || { "$DOCKER" logs codex-copy-https-proxy > "$BASE/https/last-error.log" 2>&1;echo 'HTTPS proxy failed to start (see tools/https/last-error.log)' >&2;exit 1; };sleep 0.2
+done
+# Only the selected UID may connect to the temporary loopback proxy.
+iptables -w 3 -t filter -I OUTPUT 1 -p tcp -d 127.0.0.1 --dport 18081 -m owner ! --uid-owner "$app_uid" -m comment --comment codex-copy-https -j REJECT --reject-with tcp-reset
+# Protected routing and loopback SNAT avoid breaking sockets bound to Android's VPN.
+iptables -w 3 -t mangle -I OUTPUT 1 -p tcp -m owner --uid-owner "$app_uid" -m multiport --dports 80,443 -m comment --comment codex-copy-https -j MARK --set-xmark 0x20000/0x3ffff
+iptables -w 3 -t nat -I OUTPUT 1 -p tcp -m owner --uid-owner "$app_uid" -m multiport --dports 80,443 -m comment --comment codex-copy-https -j REDIRECT --to-ports 18081
+iptables -w 3 -t nat -I POSTROUTING 1 -p tcp -d 127.0.0.1 --dport 18081 -m owner --uid-owner "$app_uid" -m comment --comment codex-copy-https -j SNAT --to-source 127.0.0.1
+expires=$(($(date +%s)+seconds))
+printf '{"active":true,"mode":"https","id":"%s","package":"%s","certificateActive":true,"expires":%s000}\n' "$ident" "$pkg" "$expires" > "$PHONE/status.json.tmp"
+chown 10458:10458 "$PHONE/status.json.tmp"
+mv "$PHONE/status.json.tmp" "$PHONE/status.json"
+restorecon -F "$PHONE/status.json" >/dev/null 2>&1
+echo "HTTPS_ACTIVE package=$pkg duration=$seconds"
+i=0
+while [ "$i" -lt "$seconds" ] && [ ! -f "$SESSION/stop" ]; do sleep 1;i=$((i+1));done
+output="/data/adb/avr-codex-copy/tools/traffic-reports/$ident"
+mkdir -p "$output"
+[ ! -f "$work/results/requests.jsonl" ] || cp "$work/results/requests.jsonl" "$output/requests.jsonl"
+echo "REPORT=$output"
+"$BASE/https-cleanup"
+trap - EXIT
+echo 'HTTPS_STOPPED certificate_removed=true rules_removed=true'

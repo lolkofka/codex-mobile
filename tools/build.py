@@ -8,6 +8,7 @@ import secrets
 import shutil
 import subprocess
 import urllib.request
+import io
 import xml.etree.ElementTree as ET
 import zipfile
 
@@ -39,7 +40,7 @@ def resolve_sdk(value):
         raise RuntimeError('Set ANDROID_HOME or pass --sdk /path/to/android-sdk')
     sdk = Path(value).expanduser().resolve()
     jars = sorted(sdk.rglob('android.jar'))
-    jars = [p for p in jars if p.parent.name.startswith('android-36')]
+    jars = [p for p in jars if p.parent.name.startswith(('android-36', 'android-37'))]
     names = ['aapt2.exe', 'zipalign.exe'] if os.name == 'nt' else ['aapt2', 'zipalign']
     aapts = sorted(sdk.rglob(names[0]))
     for aapt in reversed(aapts):
@@ -88,6 +89,21 @@ def build(args):
             jsch.write_bytes(response.read())
     if hashlib.sha256(jsch.read_bytes()).hexdigest() != JSCH_SHA256:
         raise RuntimeError('JSch SHA-256 mismatch; dependency not used')
+    native_lock = json.loads((ROOT/'android/native/xray.lock.json').read_text())
+    native_binary = ROOT/'android/native/arm64-v8a/libxray.so'
+    if not native_binary.is_file():
+        with urllib.request.urlopen(native_lock['url'], timeout=90) as response:
+            archive_bytes = response.read(40*1024*1024+1)
+        if len(archive_bytes) > 40*1024*1024 or 'sha256:'+hashlib.sha256(archive_bytes).hexdigest() != native_lock['digest']:
+            raise RuntimeError('Xray release archive SHA-256 mismatch')
+        with zipfile.ZipFile(io.BytesIO(archive_bytes)) as archive:
+            payload = archive.read('xray')
+        if hashlib.sha256(payload).hexdigest() != native_lock['binary_sha256']:
+            raise RuntimeError('Xray ARM64 SHA-256 mismatch')
+        native_binary.parent.mkdir(parents=True, exist_ok=True)
+        native_binary.write_bytes(payload)
+    if hashlib.sha256(native_binary.read_bytes()).hexdigest() != native_lock['binary_sha256']:
+        raise RuntimeError('Xray ARM64 SHA-256 mismatch')
     for name in ['generated', 'classes', 'dex']:
         target = (out/name).resolve()
         if not target.is_relative_to(out.resolve()):
@@ -108,6 +124,8 @@ def build(args):
     shutil.copyfile(out/'base.apk', out/'unsigned.apk')
     with zipfile.ZipFile(out/'unsigned.apk', 'a', compression=zipfile.ZIP_DEFLATED) as archive:
         archive.write(out/'dex/classes.dex', 'classes.dex')
+        for native in (source/'native').rglob('*.so'):
+            archive.write(native, 'lib/'+native.relative_to(source/'native').as_posix(), compress_type=zipfile.ZIP_STORED)
     run(align, '-f', '4', out/'unsigned.apk', out/'aligned.apk')
     keystore, password, alias = signing(args)
     version = ET.parse(source/'AndroidManifest.xml').getroot().get('{http://schemas.android.com/apk/res/android}versionName')

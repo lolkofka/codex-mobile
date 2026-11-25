@@ -1,4 +1,4 @@
-package local.avr.codex;
+package local.avr.codex.copy;
 
 import android.Manifest;
 import android.app.*;
@@ -164,7 +164,7 @@ public class ChatActivity extends Activity {
         drawer.setContentView(panel);Window w=drawer.getWindow();if(w!=null){w.setBackgroundDrawableResource(android.R.color.transparent);w.setGravity(Gravity.START);w.addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);w.setDimAmount(.5f);}
         drawer.show();w.setLayout((int)(getResources().getDisplayMetrics().widthPixels*.88),-1);agent.queryThreads("",false);updateDrawer();
     }
-    void updateDrawer(){if(drawer==null||!drawer.isShowing()||chatAdapter==null||agent==null)return;shownChats.clear();chatAdapter.clear();JSONArray list=agent.chatList();for(int i=0;i<list.length();i++){JSONObject t=list.optJSONObject(i);shownChats.add(t);String n=t.optString("name");if(n.isEmpty()||n.equals("null"))n=t.optString("preview","Новый чат");chatAdapter.add(n.isEmpty()?"Новый чат":n);}chatAdapter.notifyDataSetChanged();}
+    void updateDrawer(){if(drawer==null||!drawer.isShowing()||chatAdapter==null||agent==null)return;shownChats.clear();chatAdapter.clear();JSONArray list=agent.chatList();for(int i=0;i<list.length();i++){JSONObject t=list.optJSONObject(i);shownChats.add(t);String n=t.optString("name");if(n.isEmpty()||n.equals("null"))n=t.optString("preview","Новый чат");chatAdapter.add((t.optBoolean("needsApproval")?"◉ ":t.optBoolean("busy")?"● ":"")+(n.isEmpty()?"Новый чат":n));}chatAdapter.notifyDataSetChanged();}
     void chatActions(JSONObject thread){
         String id=thread.optString("id");new AlertDialog.Builder(this).setItems(new String[]{"Переименовать","Архивировать","Удалить чат"},(d,i)->{
             if(i==0){EditText name=new EditText(this);name.setText(thread.optString("name",thread.optString("preview")));new AlertDialog.Builder(this).setTitle("Название чата").setView(name).setPositiveButton("Сохранить",(x,z)->agent.renameThread(id,name.getText().toString())).setNegativeButton("Отмена",null).show();}

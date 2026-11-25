@@ -1,4 +1,4 @@
-package local.avr.codex;
+package local.avr.codex.copy;
 
 import android.app.*;
 import android.content.*;
@@ -17,8 +17,8 @@ public final class MobileFeatureTests extends Instrumentation {
     ExecutorService wireIo;
     AgentService fake;
     int offset;
-    boolean real,media,notifyOnly,authOnly;
-    @Override public void onCreate(Bundle args){super.onCreate(args);real=args!=null&&"true".equals(args.getString("real"));media=args!=null&&"true".equals(args.getString("media"));notifyOnly=args!=null&&"true".equals(args.getString("notifyOnly"));authOnly=args!=null&&"true".equals(args.getString("authOnly"));start();}
+    boolean real,media,notifyOnly,authOnly,migrationOnly;
+    @Override public void onCreate(Bundle args){super.onCreate(args);migrationOnly=args!=null&&"true".equals(args.getString("migrationOnly"));real=args!=null&&"true".equals(args.getString("real"));media=args!=null&&"true".equals(args.getString("media"));notifyOnly=args!=null&&"true".equals(args.getString("notifyOnly"));authOnly=args!=null&&"true".equals(args.getString("authOnly"));start();}
     void check(boolean value,String message){if(!value)throw new AssertionError(message);}
     void main(Runnable action){runOnMainSync(action);}
     void pass(String name){passed.add(name);Bundle b=new Bundle();b.putString("check",name);sendStatus(0,b);}
@@ -189,7 +189,7 @@ public final class MobileFeatureTests extends Instrumentation {
         check(fake.chat.outbox.entries.get(0).images.contains(id),"outbox keeps image identity");
         main(()->{fake.chat.outbox.entries.clear();try{Method restore=AgentService.class.getDeclaredMethod("restoreOutbox");restore.setAccessible(true);restore.invoke(fake);}catch(Exception e){throw new RuntimeException(e);}});
         check(fake.chat.outbox.entries.get(0).images.contains(id)&&fake.chat.outbox.paused,"images survive service recreation");
-        boolean blocked=false;try{fake.getContentResolver().openFileDescriptor(android.net.Uri.parse("content://local.avr.codex.files/00000000-0000-0000-0000-000000000001/%2E%2E%2F%2E%2E%2Ffiles%2Fsecret"),"r");}catch(FileNotFoundException e){blocked=true;}check(blocked,"provider denies traversal");
+        boolean blocked=false;try{fake.getContentResolver().openFileDescriptor(android.net.Uri.parse("content://local.avr.codex.copy.files/00000000-0000-0000-0000-000000000001/%2E%2E%2F%2E%2E%2Ffiles%2Fsecret"),"r");}catch(FileNotFoundException e){blocked=true;}check(blocked,"provider denies traversal");
         check(MediaFiles.localPath("sandbox:/sdcard/My Folder/report.pdf:12").equals("/sdcard/My Folder/report.pdf"),"sandbox link preserves spaces and strips line number");
         check(MediaFiles.quote("a'b").equals("'a'\\''b'"),"root path is shell quoted");
         final byte[] fixtureBytes=java.nio.file.Files.readAllBytes(fixture.toPath());image.delete();fixture.delete();dir.delete();pass("native image import, local/remote input, persistence, provider traversal and paths");
@@ -269,7 +269,7 @@ public final class MobileFeatureTests extends Instrumentation {
         until(()->!activity.input.getText().toString().equals(text),8000,"UI did not acknowledge submission");
     }
     void realTests()throws Exception{
-        activity=(MainActivity)startActivitySync(new Intent().setClassName("local.avr.codex","local.avr.codex.MainActivity").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+        activity=(MainActivity)startActivitySync(new Intent().setClassName("local.avr.codex.copy","local.avr.codex.copy.MainActivity").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
         until(()->activity.agent!=null&&activity.agent.ready&&activity.agent.loggedIn&&activity.agent.models.length()>0,25000,"Live engine/account/catalog not ready");
         Thread.sleep(1200);waitForIdleSync();
         main(()->{live=activity.agent;try{Field f=WebChatActivity.class.getDeclaredField("web");f.setAccessible(true);web=(WebView)f.get(activity);}catch(Exception e){throw new RuntimeException(e);}});
@@ -321,7 +321,7 @@ public final class MobileFeatureTests extends Instrumentation {
     }
 
     void authTest()throws Exception{
-        activity=(MainActivity)startActivitySync(new Intent().setClassName("local.avr.codex","local.avr.codex.MainActivity").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+        activity=(MainActivity)startActivitySync(new Intent().setClassName("local.avr.codex.copy","local.avr.codex.copy.MainActivity").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
         until(()->activity.agent!=null&&activity.agent.ready,25000,"Live engine not ready");
         main(()->live=activity.agent);check(live.busyCount()==0&&live.chat.outbox.entries.isEmpty(),"User task active; leaving it untouched");
         CountDownLatch refreshed=new CountDownLatch(1);String[] failure={""};boolean[] signedIn={false};
@@ -335,9 +335,38 @@ public final class MobileFeatureTests extends Instrumentation {
         check(checked.await(25,TimeUnit.SECONDS),"Engine network probe timed out");check(result[0].equals("0:400"),"Token endpoint not reachable from engine: "+result[0]);
         pass("live engine HTTPS reaches token endpoint; synthetic grant rejected with expected HTTP 400");
     }
+
+    void migrationTest()throws Exception{
+        activity=(MainActivity)startActivitySync(new Intent().setClassName("local.avr.codex.copy","local.avr.codex.copy.MainActivity").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+        until(()->activity.agent!=null&&activity.agent.ready,30000,"Copied engine did not start");
+        main(()->live=activity.agent);
+        until(()->live.loggedIn&&live.models.length()>0&&live.threads.length()>=13,30000,"Account, model catalog, or copied history not ready");
+        check(AgentService.BASE.equals("/data/adb/avr-codex-copy"),"Independent runtime path missing");
+        String previous=getTargetContext().getSharedPreferences("settings",0).getString("lastThread","");
+        // The engine's account/read response establishes sign-in; no credentials are inspected.
+        pass("copied ChatGPT sign-in confirmed by account/read; model catalog loaded");
+        pass("copied thread list loaded: "+live.threads.length()+" unarchived chats");
+        until(()->live.chat.loaded&&live.chat.messages.size()>0,20000,"Copied conversation did not resume");
+        pass("copied conversation resumed with message history");
+        check(new File(RemotePc.directory(getTargetContext()),"profile.json").isFile()&&new File(RemotePc.directory(getTargetContext()),"identity.enc").isFile(),"Copied PC profile or identity missing");
+        java.lang.reflect.Method keyMethod=RemotePc.class.getDeclaredMethod("key");keyMethod.setAccessible(true);
+        javax.crypto.SecretKey migratedKey=(javax.crypto.SecretKey)keyMethod.invoke(null);
+        byte[] identityBlob=java.nio.file.Files.readAllBytes(new File(RemotePc.directory(getTargetContext()),"identity.enc").toPath());
+        javax.crypto.Cipher identityCipher=javax.crypto.Cipher.getInstance("AES/GCM/NoPadding");
+        identityCipher.init(javax.crypto.Cipher.DECRYPT_MODE,migratedKey,new javax.crypto.spec.GCMParameterSpec(128,Arrays.copyOf(identityBlob,12)));
+        byte[] identityPlain=identityCipher.doFinal(identityBlob,12,identityBlob.length-12);
+        try{check(identityPlain.length>100,"Migrated identity is empty");}finally{Arrays.fill(identityPlain,(byte)0);}
+        pass("migrated SSH identity decrypts in the real app Android Keystore");
+        Field field=WebChatActivity.class.getDeclaredField("web");field.setAccessible(true);web=(WebView)field.get(activity);
+        until(()->web!=null&&web.getProgress()==100,12000,"Bundled WebView did not load");
+        String result=js("JSON.stringify({ready:!!document.querySelector('textarea'),scripts:document.scripts.length})");
+        check(result.contains("true"),"Composer missing in copied UI");
+        pass("new bundled interface rendered; composer available");
+    }
+
     @Override public void onStart(){
         Bundle result=new Bundle();
-        try{if(authOnly)authTest();else if(notifyOnly)notificationTest();else if(real)realTests();else{mockTests();parallelChatTests();pinTests();if(media){mediaTests();documentTests();}}result.putString("passed",String.join("; ",passed));result.putString("status","PASS");finish(Activity.RESULT_OK,result);}
+        try{if(migrationOnly)migrationTest();else if(authOnly)authTest();else if(notifyOnly)notificationTest();else if(real)realTests();else{mockTests();parallelChatTests();pinTests();if(media){mediaTests();documentTests();}}result.putString("passed",String.join("; ",passed));result.putString("status","PASS");finish(Activity.RESULT_OK,result);}
         catch(Throwable e){StringWriter s=new StringWriter();e.printStackTrace(new PrintWriter(s));result.putString("failure",s.toString());finish(Activity.RESULT_CANCELED,result);}
     }
 }

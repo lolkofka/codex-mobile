@@ -13,8 +13,8 @@ ROOT = Path(__file__).resolve().parents[1]
 def main():
     manifest = ET.parse(ROOT/'android/AndroidManifest.xml').getroot()
     ns = '{http://schemas.android.com/apk/res/android}'
-    assert manifest.get('package') == 'local.avr.codex'
-    assert manifest.get(ns+'versionName') == '0.6.1'
+    assert manifest.get('package') == 'local.avr.codex.copy'
+    assert manifest.get(ns+'versionName') == '0.6.6-copy'
     provider = manifest.find('application/provider')
     assert provider.get(ns+'exported') == 'false'
     assert provider.get(ns+'grantUriPermissions') == 'true'
@@ -24,7 +24,7 @@ def main():
     assert len(lock['assets']) == 2
     assert all(re.fullmatch('[a-f0-9]{64}', a['sha256']) for a in lock['assets'])
     public_files = []
-    for folder in ['android','runtime','tools','tests','docs','.github']:
+    for folder in ['android','runtime','tools','tests','docs','.github','phone-tools']:
         for path in (ROOT/folder).rglob('*'):
             if not path.is_file() or '__pycache__' in path.parts:
                 continue
@@ -40,7 +40,7 @@ def main():
         raise RuntimeError('Node.js is required for JavaScript syntax checks')
     for js in [ROOT/'android/assets/ui/chat.js', ROOT/'tests/ui.test.js']:
         subprocess.run([node,'--check',str(js)],check=True)
-    print(json.dumps({'status':'PASS','public_source_files':len(public_files),'version':'0.6.1'}))
+    print(json.dumps({'status':'PASS','public_source_files':len(public_files),'version':manifest.get(ns+'versionName')}))
 
 
 if __name__ == '__main__':

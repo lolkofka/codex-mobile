@@ -1,0 +1,22 @@
+#!/system/bin/sh
+set -e
+BASE=/data/adb/avr-codex-copy
+export HOME="$BASE/home" CODEX_HOME="$BASE/home" TMPDIR="$BASE/tmp"
+export SHELL=/system/bin/sh PATH="$BASE/tools/bin:$BASE/bin:/system/bin:/system/xbin:/data/adb/magisk"
+export LANG=C.UTF-8 TERM=xterm-256color
+unset LD_PRELOAD LD_LIBRARY_PATH
+if [ -s "$BASE/ca-certificates.crt" ]; then
+    export CODEX_CA_CERTIFICATE="$BASE/ca-certificates.crt"
+    export SSL_CERT_FILE="$BASE/ca-certificates.crt"
+fi
+# The app supplies an authenticated loopback bridge which uses Android DNS/VPN
+# and selects Happ per connection. Keep the old path for standalone launches.
+if [ -n "${1:-}" ]; then
+    export HTTP_PROXY="$1" HTTPS_PROXY="$1" ALL_PROXY="$1"
+    export NO_PROXY=127.0.0.1,localhost,::1
+elif /system/bin/ss -ltn | /system/bin/grep -q '127.0.0.1:10809'; then
+    export HTTP_PROXY=http://127.0.0.1:10809 HTTPS_PROXY=http://127.0.0.1:10809
+    export ALL_PROXY=http://127.0.0.1:10809 NO_PROXY=127.0.0.1,localhost,::1
+fi
+cd "$BASE/workspace"
+exec "$BASE/bin/codex" app-server --listen stdio://

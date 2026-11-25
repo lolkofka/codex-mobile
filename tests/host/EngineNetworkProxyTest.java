@@ -1,4 +1,4 @@
-package local.avr.codex;
+package local.avr.codex.copy;
 
 import java.io.*;
 import java.net.*;
@@ -67,6 +67,22 @@ public final class EngineNetworkProxyTest {
             Socket open=client(proxy);proxy.close();boolean terminated=false;
             try{terminated=open.getInputStream().read()==-1;}catch(SocketException reset){terminated=true;}
             check(terminated,"closing bridge terminates pending clients");open.close();
+        }
+        // A configured tunnel must never use the available direct origin, even when its core is down.
+        try(ServerSocket origin=listener(0)){
+            origin.setSoTimeout(500);java.util.concurrent.atomic.AtomicInteger errors=new java.util.concurrent.atomic.AtomicInteger();
+            EngineNetworkProxy.Route strict=new EngineNetworkProxy.Route(){public EngineNetworkProxy.Upstream open()throws IOException{throw new IOException("Xray down");}public void failed(){errors.incrementAndGet();}};
+            try(EngineNetworkProxy proxy=new EngineNetworkProxy(strict);Socket s=client(proxy)){
+                send(s,"CONNECT 127.0.0.1:"+origin.getLocalPort()+" HTTP/1.1\r\n"+auth(proxy)+"\r\n");check(head(s.getInputStream()).contains("502"),"strict tunnel failure returns error");
+                boolean leaked=false;try(Socket unexpected=origin.accept()){leaked=true;}catch(SocketTimeoutException expected){}
+                check(!leaked,"strict tunnel never reaches an available direct destination");check(errors.get()>0,"strict failure reaches visible error handler");
+            }
+        }
+        try(ServerSocket upstream=listener(0)){
+            CompletableFuture<String> received=new CompletableFuture<>();
+            worker(()->{try(Socket s=upstream.accept()){received.complete(head(s.getInputStream()));send(s,"HTTP/1.1 200 Connection Established\r\n\r\n");s.getOutputStream().write(s.getInputStream().read());}catch(Throwable e){received.completeExceptionally(e);}});
+            EngineNetworkProxy.Route strict=new EngineNetworkProxy.Route(){public EngineNetworkProxy.Upstream open()throws IOException{return new EngineNetworkProxy.Upstream(new Socket("127.0.0.1",upstream.getLocalPort()),"Proxy-Authorization: Basic test-secret\r\n");}public void failed(){}};
+            try(EngineNetworkProxy proxy=new EngineNetworkProxy(strict)){tunnel(proxy,"unresolved-chatgpt-subdomain.invalid:443",new byte[]{42});check(received.get(5,TimeUnit.SECONDS).contains("Proxy-Authorization: Basic test-secret"),"authenticated Xray upstream receives its own credentials and remote DNS target");}
         }
         System.out.println("PASS: "+checks+" engine network checks");
     }

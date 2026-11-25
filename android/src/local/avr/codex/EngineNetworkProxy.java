@@ -1,4 +1,4 @@
-package local.avr.codex;
+package local.avr.codex.copy;
 
 import java.io.*;
 import java.net.*;
@@ -15,11 +15,18 @@ final class EngineNetworkProxy implements Closeable {
     private final ServerSocket server;
     private final String password,authorization;
     private final int happPort;
+    interface Route { Upstream open()throws IOException; void failed(); default void connected(){} }
+    static final class Upstream {
+        final Socket socket;final String authorization;
+        Upstream(Socket socket,String authorization){this.socket=socket;this.authorization=authorization;}
+    }
+    private Route route;
     private final Set<Socket> sockets=ConcurrentHashMap.newKeySet();
     private final Semaphore connections=new Semaphore(16);
     private volatile boolean closed;
 
     EngineNetworkProxy()throws IOException{this(10809);}
+    EngineNetworkProxy(Route route)throws IOException{this(10809);this.route=route;}
     EngineNetworkProxy(int happPort)throws IOException{
         this.happPort=happPort;
         byte[] random=new byte[24];new SecureRandom().nextBytes(random);
@@ -34,10 +41,14 @@ final class EngineNetworkProxy implements Closeable {
         while(!closed)try{
             Socket client=server.accept();
             if(!connections.tryAcquire()){client.close();continue;}
-            sockets.add(client);daemon(()->serve(client),"codex-network-request");
+            synchronized(sockets){
+                if(closed){client.close();connections.release();continue;}
+                sockets.add(client);
+            }
+            daemon(()->serve(client),"codex-network-request");
         }catch(IOException e){if(!closed)close();}
     }
-    private static String headers(InputStream input)throws IOException{
+    static String headers(InputStream input)throws IOException{
         ByteArrayOutputStream bytes=new ByteArrayOutputStream();int matched=0;
         while(bytes.size()<16384){
             int next=input.read();if(next<0)throw new EOFException();bytes.write(next);
@@ -69,16 +80,18 @@ final class EngineNetworkProxy implements Closeable {
             if(uri.getHost()==null||uri.getUserInfo()!=null||(!connect&&!"http".equalsIgnoreCase(uri.getScheme()))){reply(client,"400 Bad Request");return;}
             int port=uri.getPort()<0?(connect?443:80):uri.getPort();
             if(port<1||port>65535){reply(client,"400 Bad Request");return;}
-            upstream=happ();boolean viaHapp=upstream!=null;
+            Upstream chosen=route==null?null:route.open();
+            upstream=chosen==null?happ():chosen.socket;boolean viaHapp=upstream!=null;
+            String upstreamAuth=chosen==null?"":chosen.authorization;
             if(!viaHapp){upstream=new Socket();upstream.connect(new InetSocketAddress(uri.getHost(),port),15000);}
             sockets.add(upstream);upstream.setSoTimeout(15000);
             if(closed)return;
             if(connect){
                 if(viaHapp){
                     String target=request[1];
-                    upstream.getOutputStream().write(("CONNECT "+target+" HTTP/1.1\r\nHost: "+target+"\r\n\r\n").getBytes(StandardCharsets.US_ASCII));
+                    upstream.getOutputStream().write(("CONNECT "+target+" HTTP/1.1\r\nHost: "+target+"\r\n"+upstreamAuth+"\r\n").getBytes(StandardCharsets.US_ASCII));
                     String response=headers(upstream.getInputStream());String[] status=response.split(" ",3);
-                    if(status.length<2||!"200".equals(status[1])){reply(client,"502 Bad Gateway");return;}
+                    if(status.length<2||!"200".equals(status[1])){if(route!=null)route.failed();reply(client,"502 Bad Gateway");return;}
                 }
                 client.getOutputStream().write("HTTP/1.1 200 Connection Established\r\n\r\n".getBytes(StandardCharsets.US_ASCII));
             }else{
@@ -90,18 +103,23 @@ final class EngineNetworkProxy implements Closeable {
                     if(!key.equals("proxy-authorization")&&!key.equals("proxy-connection")&&!key.equals("connection"))forward.append(lines[i]).append("\r\n");
                 }
                 forward.append("Connection: close\r\n\r\n");
+                if(!upstreamAuth.isEmpty())forward.insert(forward.length()-2,upstreamAuth);
                 upstream.getOutputStream().write(forward.toString().getBytes(StandardCharsets.ISO_8859_1));
             }
             client.setSoTimeout(0);upstream.setSoTimeout(0);
             final Socket target=upstream;
             daemon(()->copy(client,target),"codex-network-upload");
-            copy(upstream,client);
-        }catch(Exception e){try{reply(client,"502 Bad Gateway");}catch(IOException ignored){}}
+            long downloaded=copy(upstream,client);
+            if(route!=null){if(downloaded<=0)route.failed();else route.connected();}
+        }catch(Exception e){if(route!=null)route.failed();try{reply(client,"502 Bad Gateway");}catch(IOException ignored){}}
         finally{dispose(client);if(upstream!=null)dispose(upstream);connections.release();}
     }
-    private static void copy(Socket from,Socket to){
-        try{byte[] bytes=new byte[32768];InputStream in=from.getInputStream();OutputStream out=to.getOutputStream();int n;while((n=in.read(bytes))!=-1)out.write(bytes,0,n);to.shutdownOutput();}catch(IOException ignored){}
+    private static long copy(Socket from,Socket to){
+        long total=0;
+        try{byte[] bytes=new byte[32768];InputStream in=from.getInputStream();OutputStream out=to.getOutputStream();int n;while((n=in.read(bytes))!=-1){out.write(bytes,0,n);total+=n;}to.shutdownOutput();}catch(IOException ignored){return total>0?total:-1;}
+        return total;
     }
     private void dispose(Socket socket){sockets.remove(socket);try{socket.close();}catch(IOException ignored){}}
-    @Override public void close(){closed=true;try{server.close();}catch(IOException ignored){}for(Socket socket:sockets)dispose(socket);}
+    void closeConnections(){synchronized(sockets){for(Socket socket:sockets)dispose(socket);}}
+    @Override public void close(){closed=true;try{server.close();}catch(IOException ignored){}synchronized(sockets){for(Socket socket:sockets)dispose(socket);}}
 }

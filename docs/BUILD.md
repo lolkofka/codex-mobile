@@ -16,7 +16,7 @@ sdkmanager "platforms;android-36" "build-tools;36.0.0" "platform-tools"
 python tools/build.py --sdk /path/to/android-sdk
 ```
 
-Скрипт скачивает JSch 2.28.8 из Maven Central, проверяет его закреплённый SHA-256, компилирует Java, собирает DEX и ресурсы, выравнивает и подписывает APK. Результат находится в `dist/`; хеш — в `dist/SHA256SUMS`. Инструменты и кэши находятся в `.local/` и исключены из Git.
+Скрипт скачивает закреплённый официальный Xray ARM64 (проверяет SHA-256 архива и бинарника), а также JSch 2.28.8 из Maven Central, проверяет его закреплённый SHA-256, компилирует Java, собирает DEX и ресурсы, выравнивает и подписывает APK. Результат находится в `dist/`; хеш — в `dist/SHA256SUMS`. Инструменты и кэши находятся в `.local/` и исключены из Git.
 
 ## Подпись и обновления
 
@@ -60,12 +60,20 @@ python tests/run_host_tests.py
 
 ```console
 python tools/build_native_tests.py --sdk /path/to/android-sdk
-adb -s SERIAL install -r dist/Codex-Mobile-0.6.1.apk
+adb -s SERIAL install -r dist/Codex-Mobile-0.6.6-copy.apk
 adb -s SERIAL install -r dist/Codex-Mobile-tests.apk
-adb -s SERIAL shell am instrument -w -r -e media true local.avr.codex.tests/local.avr.codex.MobileFeatureTests
-adb -s SERIAL uninstall local.avr.codex.tests
+adb -s SERIAL shell am instrument -w -r -e media true local.avr.codex.copy.tests/local.avr.codex.copy.MobileFeatureTests
+adb -s SERIAL uninstall local.avr.codex.copy.tests
 ```
 
 Не запускайте instrumentation во время пользовательской задачи: Android перезапускает процесс тестируемого приложения. Основные протокольные тесты используют отдельное тестовое хранилище. Проверки media создают и удаляют собственные тестовые файлы. Для проверки доставки уведомления отдельно разрешите `POST_NOTIFICATIONS` приложению и передайте `-e notifyOnly true` вместо `-e media true`.
 
 Для опубликованного release APK тестовый APK тоже должен иметь release-подпись: самостоятельно собранный тестовый пакет с другим сертификатом к нему не подключится.
+
+## Root helper bundle личной копии
+
+```console
+python tools/build_phone_tools.py --sdk /path/to/sdk
+```
+
+Результат — `dist/phone-tools/`: DEX и только статические скрипты из `phone-tools/`. Никакие рабочие отчёты, ключи, сертификаты, app data и сохранённые профили не включаются. Сборка и CI не запускают helpers и не изменяют телефон. Пути/UID текущей личной копии описаны в INSTALL.md.

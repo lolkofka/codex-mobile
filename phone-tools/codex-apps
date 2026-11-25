@@ -1,0 +1,25 @@
+#!/system/bin/sh
+set -eu
+BASE=/data/adb/avr-codex-copy/tools
+export CLASSPATH="$BASE/phone-tools.dex"
+case "${1:-help}" in
+ help|--help)
+  echo 'Root-only background screen. Requires the background toggle in Codex Mobile.'
+  echo 'launch PACKAGE | status | screenshot | tap X Y | swipe X1 Y1 X2 Y2 | keyevent KEY | text TEXT | stop'
+  echo 'Never falls back to display 0. Screen closes after five idle minutes or when access is revoked.'
+  exit 0;;
+ status|stop)
+  /system/bin/app_process /system/bin PhoneTools "$@" 2>/dev/null || echo '{"ok":true,"active":false}'
+  exit 0;;
+esac
+[ -f "$BASE/permissions/background" ] || { echo 'Фоновый доступ выключен' >&2; exit 1; }
+if ! /system/bin/app_process /system/bin PhoneTools status >/dev/null 2>&1; then
+ mkdir -p "$BASE/background"
+ /data/adb/magisk/busybox setsid /system/bin/app_process /system/bin PhoneTools server >"$BASE/background/service.log" 2>&1 </dev/null &
+ n=0
+ until /system/bin/app_process /system/bin PhoneTools status >/dev/null 2>&1; do
+  n=$((n+1)); [ "$n" -lt 15 ] || { cat "$BASE/background/service.log" >&2; exit 1; }
+  sleep 0.2
+ done
+fi
+exec /system/bin/app_process /system/bin PhoneTools "$@"

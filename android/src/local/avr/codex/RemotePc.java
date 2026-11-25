@@ -1,4 +1,4 @@
-package local.avr.codex;
+package local.avr.codex.copy;
 
 import android.content.Context;
 import android.security.keystore.KeyGenParameterSpec;

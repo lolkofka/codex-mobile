@@ -2,7 +2,7 @@
 const checks=[],requests=[];
 window.Phone={post(source){const p=JSON.parse(source);requests.push(p);if(p.action==='send')window.submissionResult({accepted:true,value:p.value,chatKey:p.chatKey});}};
 const assert=(value,message)=>{if(!value)throw new Error(message);checks.push(message);};
-const clickOption=text=>Array.from(document.querySelectorAll('#sheet-content .option')).find(b=>b.querySelector('strong')?.textContent===text).click();
+const clickOption=text=>{const item=Array.from(document.querySelectorAll('#sheet-content .option')).find(b=>b.querySelector('strong')?.textContent===text);if(!item)throw new Error('Missing option: '+text+' in '+sheetKind);item.click();};
 window.addEventListener('error',e=>{const p=document.createElement('pre');p.id='test-failure';p.textContent=e.message;document.body.append(p);});
 setTimeout(()=>{
  try{
@@ -49,6 +49,21 @@ setTimeout(()=>{
    $('new-chat').click();assert(requests.at(-1).action==='newChat','a new chat can open while another turn is active');
    $('prompt').value='Уточнение';$('prompt').dispatchEvent(new Event('input'));$('delivery-button').click();clickOption('Уточнить сейчас');$('send').click();assert(requests.some(r=>r.action==='send'&&r.mode==='steer'),'steering remains available with attachment controls');
    $('account-button').click();clickOption('Уведомления о задачах');assert(requests.at(-1).action==='notificationSettings','notification controls open Android settings');
+   applyState({phoneAccess:{background:true,traffic:false,status:{active:true,mode:'https',package:'test.example'}}});renderPhoneAccess();assert(!$('phone-access-status').hidden&&$('phone-access-status').textContent.includes('HTTPS'),'temporary certificate use is visible outside settings');
+   openSheet('phoneAccess');const bg=document.querySelector('[data-access=background]'),traffic=document.querySelector('[data-access=traffic]');assert(bg.checked&&!traffic.checked,'access switches have independent state');traffic.click();assert(requests.at(-1).action==='phoneAccess'&&requests.at(-1).value==='traffic'&&requests.at(-1).enabled,'traffic switch reaches native permission gate');clickOption('Остановить доступ сейчас');assert(requests.at(-1).action==='stopPhoneAccess','visible stop control revokes access');closeSheet();
+   assert(document.querySelectorAll('.chat-working.running[aria-label]').length===2,'working circles are accessible');
+   applyState({servers:[{id:'server-one',name:'Продакшн <тест>',host:'example.invalid',port:22,user:'ubuntu',hasKey:true}]});openSheet('servers');assert($('sheet-content').textContent.includes('Продакшн <тест>')&&!$('sheet-content').querySelector('тест'),'server names render as literal text');clickOption('Продакшн <тест>');clickOption('Изменить');assert(requests.at(-1).action==='editServer'&&requests.at(-1).value==='server-one','server editing uses an ID without exposing credentials to JavaScript');openSheet('servers');clickOption('Добавить сервер');assert(requests.at(-1).action==='editServer'&&requests.at(-1).value==='','new server opens the native secret editor');
+   applyState({tunnel:{enabled:true,working:false,selected:'sub:node',selectedName:'Хост <один>',status:'Xray · Хост <один>',error:'',subscriptions:[{id:'sub',name:'Подписка <тест>',refreshable:true,updated:1,hosts:[{id:'sub:node',name:'Хост <один>',host:'proxy.invalid',port:443,protocol:'vless'}]}]}});
+   openSheet('settings');clickOption('Xray · Подписки и хосты');clickOption('Добавить подписку');assert(requests.at(-1).action==='editSubscription','subscription secrets use native editor');
+   clickOption('Подписка <тест>');assert(!$('sheet-content').querySelector('один'),'proxy names cannot inject markup');clickOption('Хост <один>');assert(requests.at(-1).action==='selectTunnelHost'&&requests.at(-1).value==='sub:node','host selection uses profile ID');
+   clickOption('Обновить подписку');assert(requests.at(-1).action==='refreshSubscription','subscription can refresh without passing URL to JS');
+   applyState({tunnel:{...state.tunnel,error:'Ошибка Xray: без прямого подключения'}});render();assert($('connection').textContent.includes('Ошибка Xray'),'strict Xray errors stay visible outside settings');$('connection').click();assert($('sheet-content').textContent.includes('Ошибка Xray: без прямого подключения'),'connection error opens Xray settings');clickOption('Проверить ChatGPT через Xray');assert(requests.at(-1).action==='testTunnel','selected tunnel has an explicit end-to-end check');closeSheet();
+   closeSheet();$('account-button').click();assert(sheetKind==='settings'&&$('sheet-title').textContent==='Настройки','drawer opens dedicated settings root');
+   assert(Array.from(document.querySelectorAll('.section-label')).map(e=>e.textContent).join('|')==='Подключение|Приложение|Система','settings have clear section hierarchy');
+   assert(!$('sheet-content').textContent.includes('Остановить помощника'),'stop action is kept in maintenance');
+   clickOption('Xray · Подписки и хосты');clickOption('Подписка <тест>');assert(sheetKind==='subscription','subscription opens below network settings');handleBack();assert(sheetKind==='tunnel','Back returns to tunnel without closing settings');handleBack();assert(sheetKind==='settings','Back returns to settings root');
+   applyState({tunnel:{...state.tunnel,error:'Нет соединения'}});assert($('sheet-content').querySelector('.has-error'),'settings root updates live connection error');
+   clickOption('Обслуживание');assert($('sheet-content').textContent.includes('Остановить помощника'),'maintenance contains stop and diagnostics');handleBack();$('sheet-content').querySelector('.profile-card').click();assert(sheetKind==='account','account actions have their own section');closeSheet();
    const report=document.createElement('pre');report.id='test-report';report.hidden=true;report.textContent=JSON.stringify({status:'PASS',checks},null,2);document.body.append(report);
    // Leave the image/composer visible in the screenshot.
    setAttachments({images:[{id:fixture,url:'media-fixture.png'}],loading:false});

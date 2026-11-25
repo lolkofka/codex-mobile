@@ -1,4 +1,4 @@
-package local.avr.codex;
+package local.avr.codex.copy;
 
 /** Runs on the host JDK: no Android runtime or real credentials required. */
 public final class LoginFlowTest {

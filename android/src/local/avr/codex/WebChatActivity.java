@@ -1,4 +1,4 @@
-package local.avr.codex;
+package local.avr.codex.copy;
 
 import android.content.*;
 import android.net.Uri;
@@ -15,9 +15,11 @@ public class WebChatActivity extends ChatActivity {
     private static final String ORIGIN="https://appassets.androidplatform.net";
     private WebView web;
     private boolean uiReady,receivingDraft;
-    private String renderedThread="",renderedOrder="";
+    private String renderedThread="",renderedOrder="",appVersion="";
     private JSONArray lastModels;
-    private String lastChats="";
+    private String lastChats="",lastServers="";
+    private ServerEditor serverEditor;
+    private TunnelEditor tunnelEditor;
     private final HashMap<String,String> sent=new HashMap<>();
     private final HashMap<String,Composer> composers=new HashMap<>();
     private final List<Uri> pendingShare=new ArrayList<>();
@@ -36,11 +38,14 @@ public class WebChatActivity extends ChatActivity {
 
     @Override public void onCreate(Bundle saved){
         super.onCreate(saved);
+        try{appVersion=getPackageManager().getPackageInfo(getPackageName(),0).versionName;}catch(Exception ignored){}
+        serverEditor=new ServerEditor(this);
+        tunnelEditor=new TunnelEditor(this);
         if(saved!=null)pickerKey=saved.getString("pickerKey","");
         if(Build.VERSION.SDK_INT>=33&&checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)!=android.content.pm.PackageManager.PERMISSION_GRANTED&&!getPreferences(0).getBoolean("askedNotifications",false)){getPreferences(0).edit().putBoolean("askedNotifications",true).apply();requestPermissions(new String[]{android.Manifest.permission.POST_NOTIFICATIONS},42);}
         root.removeAllViews();web=new WebView(this){
             @Override public android.view.inputmethod.InputConnection onCreateInputConnection(android.view.inputmethod.EditorInfo info){android.view.inputmethod.InputConnection base=super.onCreateInputConnection(info);if(base==null)return null;info.contentMimeTypes=new String[]{"image/*"};return new android.view.inputmethod.InputConnectionWrapper(base,false){@Override public boolean commitContent(android.view.inputmethod.InputContentInfo content,int flags,Bundle opts){if(!content.getDescription().hasMimeType("image/*"))return super.commitContent(content,flags,opts);try{if((flags&android.view.inputmethod.InputConnection.INPUT_CONTENT_GRANT_READ_URI_PERMISSION)!=0)content.requestPermission();main.post(()->importUris(composer,Collections.singletonList(content.getContentUri()),false,content::releasePermission));return true;}catch(Exception e){return false;}}};}
-        };web.setBackgroundColor(0xff212121);
+        };web.setBackgroundColor(0xff151a18);
         WebSettings settings=web.getSettings();settings.setJavaScriptEnabled(true);settings.setAllowFileAccess(false);
         settings.setAllowContentAccess(false);settings.setDomStorageEnabled(false);settings.setDatabaseEnabled(false);
         settings.setGeolocationEnabled(false);settings.setSupportMultipleWindows(false);settings.setJavaScriptCanOpenWindowsAutomatically(false);
@@ -203,6 +208,7 @@ public class WebChatActivity extends ChatActivity {
     }
     @Override protected void onActivityResult(int request,int result,Intent data){
         super.onActivityResult(request,result,data);
+        if(serverEditor!=null&&serverEditor.result(request,result,data))return;
         if(request!=PICK_IMAGES&&request!=PICK_FILES)return;
         String key=pickerKey;pickerKey="";
         if(result!=RESULT_OK||data==null||key.isEmpty())return;
@@ -241,13 +247,15 @@ public class WebChatActivity extends ChatActivity {
             }
         }
         sent.keySet().retainAll(present);
-        JSONObject packet=AgentService.j("replace",replace,"updates",updates,"ready",agent.ready,"busy",chat.busy,"chatKey",chat.key,"chatId",chat.listId(),"chatLoading",chat.loading||chat.removing||(!chat.id.isEmpty()&&!chat.loaded),"busyCount",agent.busyCount(),
+        JSONObject packet=AgentService.j("appVersion",appVersion,"replace",replace,"updates",updates,"ready",agent.ready,"busy",chat.busy,"chatKey",chat.key,"chatId",chat.listId(),"chatLoading",chat.loading||chat.removing||(!chat.id.isEmpty()&&!chat.loaded),"busyCount",agent.busyCount(),
             "loggedIn",agent.loggedIn,"loginPending",agent.loginFlow.waiting(),"loginWorking",agent.loginFlow.working(),"loginError",agent.loginError,"account",agent.account,"status",agent.state,"model",agent.model,"effort",agent.effort,
             "hasMoreChats",!agent.threadCursor.isEmpty(),"title",chat.title,
             "outbox",agent.outboxState(),"queuePaused",chat.outbox.paused,"modelsLoading",agent.modelsLoading,"modelsError",agent.modelsError,
-            "target",agent.remoteMode?"pc":"phone","pcConfigured",RemotePc.configured(this));
+            "target",agent.remoteMode?"pc":"phone","pcConfigured",RemotePc.configured(this),"phoneAccess",agent.phoneAccess==null?new JSONObject():agent.phoneAccess.packet());
         try{
+            if(agent.tunnel!=null)packet.put("tunnel",agent.tunnel.packet());
             if(lastModels!=agent.models){packet.put("models",agent.models);lastModels=agent.models;}
+            if(agent.workerServers!=null){JSONArray servers=agent.workerServers.metadata();String serverSignature=servers.toString();if(!serverSignature.equals(lastServers)){packet.put("servers",servers);lastServers=serverSignature;}packet.put("serverError",agent.workerServers.error);}
             JSONArray chats=agent.chatList();
             String signature=chats.toString();
             if(!signature.equals(lastChats)){packet.put("threads",chats);lastChats=signature;}
@@ -300,6 +308,17 @@ public class WebChatActivity extends ChatActivity {
             });return;
         }
         if(name.equals("openImage")){try{openLocalFile(MediaFiles.image(this,value).getAbsolutePath());}catch(Exception ignored){}return;}
+        if(name.equals("editSubscription")){if(agent!=null)tunnelEditor.show(value);return;}
+        if(name.equals("removeSubscription")){if(agent!=null)tunnelEditor.remove(value);return;}
+        if(name.equals("refreshSubscription")){if(agent!=null)agent.tunnel.refresh(value);return;}
+        if(name.equals("selectTunnelHost")){if(agent!=null)agent.tunnel.select(value);return;}
+        if(name.equals("enableTunnel")){if(agent!=null)tunnelEditor.enable(payload.optBoolean("enabled"));return;}
+        if(name.equals("testTunnel")){if(agent!=null)agent.tunnel.test();return;}
+        if(name.equals("editServer")){if(agent!=null&&agent.workerServers!=null)serverEditor.show(value);return;}
+        if(name.equals("deleteServer")){if(agent!=null&&agent.workerServers!=null)serverEditor.remove(value);return;}
+        if(name.equals("testServer")){if(agent!=null&&agent.workerServers!=null)serverEditor.test(value);return;}
+        if(name.equals("phoneAccess")){if(agent!=null&&agent.phoneAccess!=null)agent.phoneAccess.change(value,payload.optBoolean("enabled"));return;}
+        if(name.equals("stopPhoneAccess")){if(agent!=null&&agent.phoneAccess!=null)agent.phoneAccess.stop();return;}
         if(name.equals("notificationSettings")){startActivity(new Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(android.provider.Settings.EXTRA_APP_PACKAGE,getPackageName()));return;}
         if(name.equals("mic")){requestVoice(false);return;}
         if(name.equals("voice")){requestVoice(true);return;}
@@ -371,23 +390,17 @@ public class WebChatActivity extends ChatActivity {
     private void submissionResult(JSONObject payload,boolean accepted){
         callJs("submissionResult",AgentService.j("accepted",accepted,"value",payload.optString("value"),"chatKey",payload.optString("chatKey")));
     }
-    private void showSharedFile(File file)throws IOException{
-        Uri uri=MediaFiles.shareUri(this,file);
-        Intent view=new Intent(Intent.ACTION_VIEW).setDataAndType(uri,MediaFiles.mime(file.getName())).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-        view.setClipData(ClipData.newRawUri("Файл",uri));
-        main.post(()->{
-            try{startActivity(Intent.createChooser(view,"Открыть файл"));}
-            catch(Exception e){Toast.makeText(this,"Нет приложения для этого типа файла",Toast.LENGTH_LONG).show();}
-        });
+    private void showSharedFile(File file){
+        main.post(()->FileActions.show(this,file));
     }
     private void showPcSettings(){
         try{
             JSONObject profile=RemotePc.profile(this);
-            android.widget.LinearLayout layout=new android.widget.LinearLayout(this);layout.setOrientation(1);layout.setPadding(36,16,36,16);
-            TextView note=new TextView(this);note.setText("SSH с проверкой ключа компьютера. В другой сети нужен адрес ПК в личной VPN. Это отдельные чаты Mobile на ПК.");layout.addView(note);
-            EditText host=new EditText(this);host.setSingleLine(true);host.setHint("Адрес ПК");host.setText(profile.getString("host"));layout.addView(host);
-            EditText port=new EditText(this);port.setSingleLine(true);port.setInputType(2);port.setHint("Порт SSH");port.setText(String.valueOf(profile.getInt("port")));layout.addView(port);
-            new android.app.AlertDialog.Builder(this).setTitle("Подключение ПК").setView(layout).setNegativeButton("Отмена",null)
+            android.widget.LinearLayout layout=NativeUi.form(this);
+            TextView note=NativeUi.note(layout,"SSH с проверкой ключа компьютера. В другой сети нужен адрес ПК в личной VPN. Это отдельные чаты Mobile на ПК.");
+            EditText host=NativeUi.field(layout,"Адрес ПК",profile.getString("host"),false);
+            EditText port=NativeUi.field(layout,"Порт SSH",String.valueOf(profile.getInt("port")),false);port.setInputType(2);
+            android.app.AlertDialog pcDialog=new android.app.AlertDialog.Builder(this).setTitle("Подключение ПК").setView(layout).setNegativeButton("Отмена",null)
                 .setNeutralButton("Публичный ключ",(d,w)->{try{RemotePc.prepareIdentity(this);copy(new String(java.nio.file.Files.readAllBytes(new File(RemotePc.directory(this),"identity.pub").toPath()),java.nio.charset.StandardCharsets.UTF_8));Toast.makeText(this,"Публичный ключ скопирован",Toast.LENGTH_SHORT).show();}catch(Exception e){Toast.makeText(this,"Не удалось подготовить ключ",Toast.LENGTH_SHORT).show();}})
                 .setPositiveButton("Сохранить",(d,w)->{
                     try{
@@ -398,6 +411,7 @@ public class WebChatActivity extends ChatActivity {
                         Toast.makeText(this,"Адрес сохранён. Подключись к ПК в меню устройств.",Toast.LENGTH_LONG).show();render();
                     }catch(Exception e){Toast.makeText(this,"Проверь адрес и порт",Toast.LENGTH_SHORT).show();}
                 }).show();
+            NativeUi.style(pcDialog,false);
         }catch(Exception e){new android.app.AlertDialog.Builder(this).setTitle("ПК ещё не настроен").setMessage("Нужно один раз установить публичный ключ телефона на ПК и передать телефону проверенный ключ компьютера. Пароль аккаунта для этого не нужен.").setPositiveButton("Понятно",null).show();}
     }
     @Override public void onBackPressed(){if(uiReady)web.evaluateJavascript("window.handleBack()",result->{if(!"true".equals(result))super.onBackPressed();});else super.onBackPressed();}

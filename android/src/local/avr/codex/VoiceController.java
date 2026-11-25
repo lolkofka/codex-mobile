@@ -1,4 +1,4 @@
-package local.avr.codex;
+package local.avr.codex.copy;
 
 import android.app.Activity;
 import android.content.Intent;

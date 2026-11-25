@@ -20,7 +20,7 @@ def main():
                     str(ROOT/'android/src/local/avr/codex/EngineNetworkProxy.java'),
                     *map(str, (ROOT/'tests/host').glob('*.java'))], check=True)
     for name in ['LoginFlowTest', 'EngineNetworkProxyTest']:
-        subprocess.run([java_tool('java'), '-cp', str(out), 'local.avr.codex.'+name], check=True, timeout=30)
+        subprocess.run([java_tool('java'), '-cp', str(out), 'local.avr.codex.copy.'+name], check=True, timeout=30)
 
 
 if __name__ == '__main__':

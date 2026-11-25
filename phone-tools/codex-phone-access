@@ -1,0 +1,21 @@
+#!/system/bin/sh
+set -eu
+BASE=/data/adb/avr-codex-copy/tools
+case "${1:-status}" in
+ configure)
+  [ "$#" -eq 3 ] || exit 2
+  case "$2$3" in 00|01|10|11) ;; *) exit 2;; esac
+  umask 077
+  mkdir -p "$BASE/permissions"
+  if [ "$2" = 1 ]; then touch "$BASE/permissions/background"; else rm -f "$BASE/permissions/background"; "$BASE/bin/codex-apps" stop >/dev/null 2>&1 || true; fi
+  if [ "$3" = 1 ]; then touch "$BASE/permissions/traffic"; else rm -f "$BASE/permissions/traffic"; "$BASE/bin/codex-traffic" stop; fi
+  ;;
+ stop)
+  "$BASE/bin/codex-apps" stop >/dev/null 2>&1 || true
+  "$BASE/bin/codex-traffic" stop
+  ;;
+ status)
+  [ ! -f /data/user/0/local.avr.codex.copy/files/phone-access/status.json ] || cat /data/user/0/local.avr.codex.copy/files/phone-access/status.json
+  ;;
+ *) echo 'configure BACKGROUND_0_OR_1 TRAFFIC_0_OR_1 | status | stop' >&2;exit 2;;
+esac

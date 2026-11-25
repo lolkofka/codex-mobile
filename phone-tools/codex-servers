@@ -1,0 +1,4 @@
+#!/system/bin/sh
+set -eu
+export CLASSPATH=/data/adb/avr-codex-copy/tools/phone-tools.dex
+exec /system/bin/app_process /system/bin ServerCli "$@"

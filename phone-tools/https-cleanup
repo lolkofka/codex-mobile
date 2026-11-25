@@ -1,0 +1,59 @@
+#!/system/bin/sh
+set -u
+BASE=/data/adb/avr-codex-copy/tools
+SESSION="$BASE/https/current"
+STATUS=/data/user/0/local.avr.codex.copy/files/phone-access/status.json
+BB=/data/adb/magisk/busybox
+[ -d "$SESSION" ] || exit 0
+if [ -n "${1:-}" ]; then read -r cleanup_id < "$SESSION/id";[ "$cleanup_id" = "$1" ] || exit 0;fi
+mkdir "$SESSION/cleanup.lock" 2>/dev/null || exit 0
+failed=0
+if [ -f "$SESSION/uid" ]; then
+ read -r app_uid < "$SESSION/uid"
+ case "$app_uid" in ''|*[!0-9]*) failed=1;; *)
+  iptables -w 3 -t nat -D OUTPUT -p tcp -m owner --uid-owner "$app_uid" -m multiport --dports 80,443 -m comment --comment codex-copy-https -j REDIRECT --to-ports 18081 2>/dev/null || true
+  iptables -w 3 -t mangle -D OUTPUT -p tcp -m owner --uid-owner "$app_uid" -m multiport --dports 80,443 -m comment --comment codex-copy-https -j MARK --set-xmark 0x20000/0x3ffff 2>/dev/null || true
+  iptables -w 3 -t nat -D POSTROUTING -p tcp -d 127.0.0.1 --dport 18081 -m owner --uid-owner "$app_uid" -m comment --comment codex-copy-https -j SNAT --to-source 127.0.0.1 2>/dev/null || true
+  iptables -w 3 -t filter -D OUTPUT -p tcp -d 127.0.0.1 --dport 18081 -m owner ! --uid-owner "$app_uid" -m comment --comment codex-copy-https -j REJECT --reject-with tcp-reset 2>/dev/null || true
+  for table in nat mangle filter; do
+   if iptables -w 3 -t "$table" -S | grep -q -- '--comment codex-copy-https'; then failed=1; fi
+  done
+ ;; esac
+fi
+if [ -f "$SESSION/id" ]; then
+ read -r ident < "$SESSION/id"
+ for record in "$SESSION"/mounts/*; do
+  [ -f "$record" ] || continue
+  target=${record##*/}
+  case "$target" in ''|*[!0-9]*) continue;; esac
+  [ -d "/proc/$target" ] || continue
+  # The marker check prevents unmounting an unrelated original trust store or a reused PID.
+  if "$BB" nsenter -t "$target" -m /system/bin/test -f "/apex/com.android.conscrypt/cacerts/.codex-$ident" 2>/dev/null; then
+   "$BB" nsenter -t "$target" -m "$BB" umount /apex/com.android.conscrypt/cacerts || "$BB" nsenter -t "$target" -m "$BB" umount -l /apex/com.android.conscrypt/cacerts || failed=1
+  fi
+ done
+fi
+/data/adb/avr-docker/ctl logs codex-copy-https-proxy > "$BASE/https/last-proxy.log" 2>&1 || true
+/data/adb/avr-docker/ctl container rm -f codex-copy-https-proxy >/dev/null 2>&1 || true
+if [ -f "$SESSION/work" ]; then
+ read -r work < "$SESSION/work"
+ case "$work" in /data/adb/avr-docker/rootfs/workspace/codex-mobile-https/sessions/session-*)
+  # The owner requested deletion of temporary CA material after every use.
+  if [ "$failed" = 0 ]; then rm -rf "$work"; else rm -rf "$work/ca"; fi
+ ;; esac
+fi
+if [ "$failed" = 0 ]; then
+ printf '{"active":false,"certificateRemoved":true,"finished":%s000}\n' "$(date +%s)" > "$STATUS.tmp"
+ chown 10458:10458 "$STATUS.tmp"
+ chmod 600 "$STATUS.tmp"
+ mv "$STATUS.tmp" "$STATUS"
+ restorecon -F "$STATUS" >/dev/null 2>&1
+ rm -rf "$SESSION"
+else
+ printf '{"active":true,"mode":"https","error":"Не удалось убрать временное доверие. Останови выбранное приложение и повтори остановку доступа."}\n' > "$STATUS.tmp"
+ chown 10458:10458 "$STATUS.tmp"
+ mv "$STATUS.tmp" "$STATUS"
+ restorecon -F "$STATUS" >/dev/null 2>&1
+ rmdir "$SESSION/cleanup.lock" 2>/dev/null || true
+ exit 1
+fi

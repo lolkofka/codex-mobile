@@ -1,0 +1,23 @@
+#!/system/bin/sh
+set -u
+BASE=/data/adb/avr-codex-copy/tools
+SESSION="$BASE/https/current"
+HEART=/data/user/0/local.avr.codex.copy/files/phone-access/heartbeat.json
+read -r owner < "$SESSION/pid"
+read -r deadline < "$SESSION/deadline"
+read -r expected_id < "$SESSION/id"
+while [ -d "$SESSION" ]; do
+ read -r current_id < "$SESSION/id" || exit 0
+ [ "$current_id" = "$expected_id" ] || exit 0
+ now=$(date +%s)
+ modified=$(stat -c %Y "$HEART" 2>/dev/null || echo 0)
+ if [ -f "$SESSION/stop" ] || [ ! -f "$BASE/permissions/traffic" ] || ! grep -q '"trafficAllowed":true' "$HEART" || ! kill -0 "$owner" 2>/dev/null || [ "$now" -ge "$deadline" ] || [ $((now-modified)) -gt 6 ]; then
+  case "$owner" in ''|*[!0-9]*) ;; *)
+   if [ -f "/proc/$owner/cmdline" ] && tr '\000' ' ' < "/proc/$owner/cmdline" | grep -q 'codex-traffic https'; then kill -TERM "$owner" 2>/dev/null || true; fi
+  ;; esac
+  sleep 1
+  "$BASE/https-cleanup" "$expected_id"
+  exit
+ fi
+ sleep 1
+done

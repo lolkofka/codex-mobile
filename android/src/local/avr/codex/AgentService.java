@@ -1,4 +1,4 @@
-package local.avr.codex;
+package local.avr.codex.copy;
 
 import android.app.*;
 import android.content.*;
@@ -12,7 +12,7 @@ import java.util.concurrent.*;
 import java.util.function.Consumer;
 
 public final class AgentService extends Service {
-    static final String BASE = "/data/adb/avr-codex";
+    static final String BASE = "/data/adb/avr-codex-copy";
     final Handler main = new Handler(Looper.getMainLooper());
     final ArrayList<Runnable> listeners = new ArrayList<>();
     final ArrayList<JSONObject> approvals = new ArrayList<>();
@@ -33,6 +33,9 @@ public final class AgentService extends Service {
     boolean ready, loggedIn;
     int visibleClients;
     TaskNotifications notifications;
+    PhoneAccess phoneAccess;
+    WorkerServers workerServers;
+    TunnelManager tunnel;
     private final Set<String> notifiedTurns=new HashSet<>();
     private boolean changeQueued;
     private final ExecutorService wireIo = Executors.newSingleThreadExecutor();
@@ -90,9 +93,13 @@ public final class AgentService extends Service {
         restoreOutbox();
         restorePins();
         notifications=new TaskNotifications(this);startForeground(1,notifications.ongoing());
+        phoneAccess=new PhoneAccess(this);
+        workerServers=new WorkerServers(this);
+        tunnel=new TunnelManager(this,()->main.post(()->changed()),()->{EngineNetworkProxy proxy=networkProxy;if(proxy!=null)proxy.closeConnections();});
         startEngine();
     }
     @Override public int onStartCommand(Intent i,int flags,int id) {
+        if(i!=null && "STOP_PHONE_ACCESS".equals(i.getAction())&&phoneAccess!=null)phoneAccess.stop();
         if(i!=null && "STOP".equals(i.getAction())) stopSelf();
         if(i!=null && "INTERRUPT".equals(i.getAction()))interrupt(chats.get(i.getStringExtra("thread")));
         if(i!=null && "DIAGNOSTICS".equals(i.getAction())) diagnoseWhenReady(20);
@@ -178,7 +185,7 @@ public final class AgentService extends Service {
                     if(generation!=engineGeneration){remote.close();return;}
                     input=remote.input;output=remote.output;
                 }else{
-                    bridge=new EngineNetworkProxy();
+                    bridge=new EngineNetworkProxy(tunnel);
                     child=new ProcessBuilder("su","-c","/system/bin/sh "+BASE+"/run "+MediaFiles.quote(bridge.address())).start();
                     if(generation!=engineGeneration){child.destroy();return;}
                     input=child.getInputStream();output=child.getOutputStream();
@@ -604,6 +611,7 @@ public final class AgentService extends Service {
             p=j("cwd",cwd,"approvalPolicy","on-request","sandbox","workspace-write",
                 "developerInstructions","Ты работаешь на ПК владельца с Windows через личный мобильный клиент. Команды выполняются на ПК, а не на Android. Учитывай реальную ОС и PowerShell. Сохраняй пользовательские данные; для опасных изменений сначала получи явное разрешение. Не изменяй загрузчик или прошивку подключенного телефона без отдельной команды.");
         }else p=j("cwd",BASE+"/workspace","approvalPolicy","on-request","sandbox","danger-full-access","developerInstructions","Это личный мобильный Codex на Android. Для создания и редактирования картинок используй встроенный image_gen.imagegen, если он доступен в этой сессии; показывай фактический результат и сообщай о недоступности или лимите сервиса, не подменяй генерацию описанием. Ссылки на файлы оформляй как [название](/абсолютный/путь), пути с пробелами как [название](</абсолютный/путь с пробелами>); веб-ссылки оформляй с https://. Не выдавай локальный путь за веб-адрес.");
+        if(!remoteMode)try{p.put("developerInstructions",p.getString("developerInstructions")+PhoneAccess.instructions()+WorkerServers.instructions());}catch(JSONException ignored){}
         try{p.put("config",j("features",j("image_generation",true)));}catch(JSONException ignored){}
         if(!model.isEmpty())try{p.put("model",model);}catch(JSONException ignored){}return p;
     }
@@ -919,6 +927,9 @@ public final class AgentService extends Service {
             });
     }
     @Override public void onDestroy() {
+        if(tunnel!=null)tunnel.close();
+        if(workerServers!=null)workerServers.close();
+        if(phoneAccess!=null)phoneAccess.close();
         stopping=true;++engineGeneration;
         loginFlow.reset();getSharedPreferences("runtime",0).edit().putBoolean("authPending",false).apply();
         if(networkProxy!=null)networkProxy.close();

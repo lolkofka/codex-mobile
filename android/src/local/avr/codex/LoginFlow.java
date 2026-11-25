@@ -1,4 +1,4 @@
-package local.avr.codex;
+package local.avr.codex.copy;
 
 /** In-memory login ceremony. Tokens remain owned and persisted by app-server. */
 final class LoginFlow {

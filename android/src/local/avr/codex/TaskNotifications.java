@@ -1,4 +1,4 @@
-package local.avr.codex;
+package local.avr.codex.copy;
 
 import android.Manifest;
 import android.app.*;
@@ -30,7 +30,7 @@ final class TaskNotifications {
         Intent stopIntent=new Intent(service,AgentService.class).setAction(busy?"INTERRUPT":"STOP").putExtra("thread",chat.listId());
         PendingIntent stop=PendingIntent.getService(service,2,stopIntent,PendingIntent.FLAG_UPDATE_CURRENT|PendingIntent.FLAG_IMMUTABLE);
         String status=!service.approvals.isEmpty()?"Нужно твоё подтверждение":count>1?"Активных задач: "+count:busy?"Выполняю задачу…":service.ready?"Готов к работе":"Подключаюсь…";
-        Notification.Builder notification=new Notification.Builder(service,"agent").setSmallIcon(R.drawable.icon)
+        Notification.Builder notification=new Notification.Builder(service,"agent").setSmallIcon(R.drawable.ic_notification).setLargeIcon(NotificationArtwork.logo(service))
             .setContentTitle("Codex Mobile").setContentText(status).setContentIntent(open(chat.listId()))
             .setOnlyAlertOnce(true).setOngoing(true).setCategory(Notification.CATEGORY_SERVICE)
             .setVisibility(Notification.VISIBILITY_PRIVATE)
@@ -44,7 +44,7 @@ final class TaskNotifications {
         String title=status.equals("completed")?"Задача выполнена":status.equals("interrupted")?"Задача остановлена":"Не удалось завершить задачу";
         if(body==null||body.trim().isEmpty())body=chatTitle;
         if(body.length()>1000)body=body.substring(0,1000)+"…";
-        manager.notify("turn-"+turn,2,new Notification.Builder(service,"results").setSmallIcon(R.drawable.icon)
+        manager.notify("turn-"+turn,2,new Notification.Builder(service,"results").setSmallIcon(R.drawable.ic_notification).setLargeIcon(NotificationArtwork.logo(service))
             .setContentTitle(title).setContentText(body).setStyle(new Notification.BigTextStyle().bigText(body))
             .setContentIntent(open(chat)).setAutoCancel(true).setCategory(Notification.CATEGORY_STATUS)
             .setVisibility(Notification.VISIBILITY_PRIVATE).setGroup("codex-results")

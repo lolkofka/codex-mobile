@@ -16,7 +16,7 @@ def main():
     args=parser.parse_args()
     android,aapt,align,signer,d8=resolve_sdk(args.sdk)
     target_classes=ROOT/'build/classes'
-    if not (target_classes/'local/avr/codex/AgentService.class').is_file():
+    if not (target_classes/'local/avr/codex/copy/AgentService.class').is_file():
         raise RuntimeError('Build the main APK first')
     out=ROOT/'build/native-tests'
     out.mkdir(exist_ok=True)

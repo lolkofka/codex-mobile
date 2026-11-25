@@ -1,5 +1,5 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="local.avr.codex.tests" android:versionCode="1" android:versionName="1">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="local.avr.codex.copy.tests" android:versionCode="1" android:versionName="1">
   <uses-sdk android:minSdkVersion="29" android:targetSdkVersion="36" />
   <application android:label="Codex feature tests" android:allowBackup="false" />
-  <instrumentation android:name="local.avr.codex.MobileFeatureTests" android:targetPackage="local.avr.codex" android:label="Codex model and follow-up checks" />
+  <instrumentation android:name="local.avr.codex.copy.MobileFeatureTests" android:targetPackage="local.avr.codex.copy" android:label="Codex model and follow-up checks" />
 </manifest>
