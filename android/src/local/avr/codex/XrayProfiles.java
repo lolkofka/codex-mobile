@@ -17,26 +17,52 @@ final class XrayProfiles {
         byte[] digest=MessageDigest.getInstance("SHA-256").digest(outbound.toString().getBytes(StandardCharsets.UTF_8));
         StringBuilder s=new StringBuilder();for(int i=0;i<12;i++)s.append(String.format(Locale.ROOT,"%02x",digest[i]));return s.toString();
     }
-    static JSONArray parse(String body)throws Exception{
+    static final class ImportResult {
+        final JSONArray profiles;final String warning;
+        ImportResult(JSONArray profiles,Map<String,Integer> skipped){
+            this.profiles=profiles;
+            ArrayList<String> protocols=new ArrayList<>();int count=0;
+            for(Map.Entry<String,Integer> item:skipped.entrySet()){count+=item.getValue();protocols.add(item.getKey()+" ("+item.getValue()+")");}
+            warning=count==0?"":"Пропущено серверов: "+count+". Не поддерживаются: "+String.join(", ",protocols)+".";
+        }
+    }
+    static String unsupported(String protocol){
+        switch(protocol.toLowerCase(Locale.ROOT)){
+            case "hy2":case "hysteria2":return "Hysteria2";
+            case "hysteria":return "Hysteria";
+            case "tuic":return "TUIC";
+            case "ssr":return "ShadowsocksR";
+            case "wireguard":return "WireGuard";
+            default:return "";
+        }
+    }
+    static void skip(Map<String,Integer> skipped,String protocol){skipped.put(protocol,skipped.getOrDefault(protocol,0)+1);}
+    static JSONArray parse(String body)throws Exception{return parseSubscription(body).profiles;}
+    static ImportResult parseSubscription(String body)throws Exception{
         if(body.length()>2*1024*1024)throw invalid("Подписка больше 2 МБ");
         body=body.trim();if(body.isEmpty())throw invalid("Подписка пуста");
         if(!body.startsWith("[")&&!body.startsWith("{")&&!body.contains("://"))try{body=b64(body).trim();}catch(Exception e){throw invalid("Нужны ссылки VLESS, VMess, Trojan, Shadowsocks или Xray JSON");}
-        JSONArray found=new JSONArray();Set<String> seen=new HashSet<>();
+        JSONArray found=new JSONArray();Set<String> seen=new HashSet<>();Map<String,Integer> skipped=new LinkedHashMap<>();
         if(body.startsWith("{")||body.startsWith("[")){
             Object json=new JSONTokener(body).nextValue();JSONArray configs=json instanceof JSONArray?(JSONArray)json:new JSONArray().put(json);
             for(int i=0;i<configs.length();i++){
                 JSONObject config=configs.getJSONObject(i);JSONObject outbound=config;
                 if(config.has("outbounds")){JSONArray all=config.getJSONArray("outbounds");outbound=null;for(int j=0;j<all.length();j++){JSONObject o=all.getJSONObject(j);if(supported(o.optString("protocol"))){outbound=o;break;}}if(outbound==null)throw invalid("В JSON нет поддерживаемого прокси");}
+                String ignored=unsupported(outbound.optString("protocol"));if(!ignored.isEmpty()){skip(skipped,ignored);continue;}
                 add(found,seen,config.optString("remarks",config.optString("name","Сервер "+(i+1))),sanitize(outbound));
             }
         }else{
             int lineNumber=0;for(String line:body.split("\\r?\\n")){
                 line=line.trim();lineNumber++;if(line.isEmpty()||line.startsWith("#"))continue;
+                int separator=line.indexOf("://");String ignored=separator<0?"":unsupported(line.substring(0,separator));
+                if(!ignored.isEmpty()){skip(skipped,ignored);continue;}
                 try{JSONObject profile=link(line);add(found,seen,profile.getString("name"),profile.getJSONObject("outbound"));}
                 catch(Exception e){throw invalid("Строка "+lineNumber+": "+(e instanceof IOException?e.getMessage():"некорректная ссылка сервера"));}
             }
         }
-        if(found.length()==0)throw invalid("В подписке нет серверов");if(found.length()>500)throw invalid("В подписке больше 500 серверов");return found;
+        ImportResult result=new ImportResult(found,skipped);
+        if(found.length()==0)throw invalid(skipped.isEmpty()?"В подписке нет серверов":"В подписке нет поддерживаемых серверов. "+result.warning);
+        if(found.length()>500)throw invalid("В подписке больше 500 серверов");return result;
     }
     static boolean supported(String protocol){return Arrays.asList("vless","vmess","trojan","shadowsocks").contains(protocol);}
     static void add(JSONArray array,Set<String> seen,String name,JSONObject outbound)throws Exception{

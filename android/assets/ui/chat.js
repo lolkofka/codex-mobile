@@ -289,12 +289,13 @@ function openSheet(kind,data=null){
   section(c,'Маршрут',switchRow('Строгий Xray','При сбое — ошибка без прямого обхода',t.enabled,t.working,enabled=>post('enableTunnel','',{enabled})),tunnelOption('Проверить ChatGPT через Xray',()=>post('testTunnel'),t.working?'Проверяю…':'Проверка TLS и ответа ChatGPT',false,Boolean(t.working)||!t.enabled,'check'));
   const add=tunnelOption('Добавить подписку',()=>post('editSubscription'),'Ссылка HTTPS или список серверов',false,Boolean(t.working),'plus');add.classList.add('add-action');
   const group=section(c,'Подписки',add);
-  for(const subscription of t.subscriptions||[])group.append(navOption(subscription.name,()=>openSheet('subscription',subscription),subscription.hosts.length+' хостов','box'));
+  for(const subscription of t.subscriptions||[])group.append(navOption(subscription.name,()=>openSheet('subscription',subscription),subscription.hosts.length+' хостов'+(subscription.warning?' · Есть пропущенные серверы':''),'box'));
   if(!(t.subscriptions||[]).length)note(c,'Подписок пока нет. Добавь свою ссылку, затем выбери хост.');
   help(c,'Как работает маршрут','Весь трафик локального движка Codex, включая домены ChatGPT, идёт через выбранный хост. Без автоматического переключения на другой сервер или прямую сеть. Внешний браузер и движок на ПК используют свою сеть.');
  }
  if(kind==='subscription'&&data){
   statusCard(c,'network',data.name,data.hosts.length+' хостов'+(data.updated?' · Обновлено '+new Date(data.updated).toLocaleDateString():''));
+  note(c,data.warning);
   const actions=section(c,'Подписка',tunnelOption('Обновить подписку',()=>post('refreshSubscription',data.id),data.refreshable?'Загрузить список заново':'Используй редактирование для вставленных ссылок',false,!data.refreshable||Boolean(state.tunnel?.working),'down'),tunnelOption('Изменить подписку',()=>post('editSubscription',data.id),'Название и источник',false,Boolean(state.tunnel?.working),'rename'));
   actions.classList.add('compact-actions');note(c,state.tunnel?.error,'error');
   const hosts=section(c,'Выбери хост');

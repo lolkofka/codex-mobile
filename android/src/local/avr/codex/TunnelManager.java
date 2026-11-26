@@ -35,7 +35,7 @@ final class TunnelManager implements EngineNetworkProxy.Route,Closeable {
             for(int i=0;i<all.length();i++){
                 JSONObject sub=all.getJSONObject(i);JSONArray nodes=new JSONArray(),profiles=sub.getJSONArray("profiles");
                 for(int j=0;j<profiles.length();j++){JSONObject p=profiles.getJSONObject(j),o=p.getJSONObject("outbound"),endpoint=XrayProfiles.endpoint(o);nodes.put(XrayProfiles.obj("id",sub.getString("id")+":"+p.getString("id"),"name",p.getString("name"),"host",endpoint.optString("address"),"port",endpoint.optInt("port"),"protocol",o.optString("protocol")));}
-                subscriptions.put(XrayProfiles.obj("id",sub.getString("id"),"name",sub.getString("name"),"refreshable",!sub.optString("url").isEmpty(),"updated",sub.optLong("updated"),"hosts",nodes));
+                subscriptions.put(XrayProfiles.obj("id",sub.getString("id"),"name",sub.getString("name"),"refreshable",!sub.optString("url").isEmpty(),"updated",sub.optLong("updated"),"warning",sub.optString("warning"),"hosts",nodes));
             }
             result=XrayProfiles.obj("enabled",enabled,"working",working,"error",error,"status",state,"selectedName",selectedName,"selected",snapshot==null?"":snapshot.optString("selected"),"subscriptions",subscriptions);
         }catch(Exception ignored){}return result;
@@ -102,15 +102,15 @@ final class TunnelManager implements EngineNetworkProxy.Route,Closeable {
             try{int status=c.getResponseCode();if(status>=300&&status<400){String location=c.getHeaderField("Location");if(location==null)throw new IOException("Подписка вернула некорректное перенаправление");url=new URL(url,location);if(!url.getProtocol().equals("https")||url.getUserInfo()!=null)throw new IOException("Подписка перенаправляет на незащищённый адрес");continue;}if(status!=200)throw new IOException("Не удалось загрузить подписку: HTTP "+status);try(InputStream in=c.getInputStream()){return new String(MediaFiles.read(in,2*1024*1024),StandardCharsets.UTF_8);}}finally{c.disconnect();}
         }throw new IOException("Слишком много перенаправлений подписки");
     }
-    void importSubscription(String id,String name,String source,boolean url,Runnable success,java.util.function.Consumer<String> failure){
+    void importSubscription(String id,String name,String source,boolean url,java.util.function.Consumer<String> success,java.util.function.Consumer<String> failure){
         if(working)return;working=true;changed.run();tasks.execute(()->{
-            try{String body=url?fetch(source):source;JSONArray profiles=XrayProfiles.parse(body);
-                synchronized(this){store.save(id,name,url?source:"",profiles);disconnect.run();stopCore();error="";reload();}success.run();
+            try{String body=url?fetch(source):source;XrayProfiles.ImportResult imported=XrayProfiles.parseSubscription(body);
+                synchronized(this){store.save(id,name,url?source:"",imported.profiles,imported.warning);disconnect.run();stopCore();error="";reload();}success.accept(imported.warning);
             }catch(Exception e){failure.accept(e instanceof IOException?e.getMessage():"Не удалось загрузить или разобрать подписку. Прежняя версия сохранена.");}finally{working=false;changed.run();}
         });
     }
     void refresh(String id){
-        try{JSONObject s=store.subscription(id);if(s.optString("url").isEmpty())throw new IOException("Вставь обновлённые ссылки через редактирование подписки");importSubscription(id,s.getString("name"),s.getString("url"),true,()->report(""),this::report);}catch(Exception e){report("Не удалось обновить подписку");}
+        try{JSONObject s=store.subscription(id);if(s.optString("url").isEmpty())throw new IOException("Вставь обновлённые ссылки через редактирование подписки");importSubscription(id,s.getString("name"),s.getString("url"),true,warning->report(""),this::report);}catch(Exception e){report("Не удалось обновить подписку");}
     }
     void test(){
         if(working)return;working=true;changed.run();tasks.execute(()->{

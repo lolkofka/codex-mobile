@@ -30,11 +30,14 @@ final class TunnelStore {
         ByteArrayOutputStream b=new ByteArrayOutputStream();b.write(c.getIV());b.write(encrypted);File tmp=new File(file.getParentFile(),"subscriptions.tmp");Files.write(tmp.toPath(),b.toByteArray());if(!tmp.renameTo(file))throw new IOException("Не удалось сохранить подписки");
     }
     synchronized void save(String id,String name,String url,JSONArray profiles)throws Exception{
+        save(id,name,url,profiles,"");
+    }
+    synchronized void save(String id,String name,String url,JSONArray profiles,String warning)throws Exception{
         JSONObject data=read();JSONArray all=data.getJSONArray("subscriptions");int at=-1;
         for(int i=0;i<all.length();i++)if(all.getJSONObject(i).getString("id").equals(id))at=i;
         if(at<0){if(all.length()>=30)throw new IOException("Можно добавить до 30 подписок");id=UUID.randomUUID().toString();}
         if(name.trim().isEmpty()||name.length()>80)throw new IOException("Укажи название подписки (до 80 символов)");
-        JSONObject sub=XrayProfiles.obj("id",id,"name",name.trim(),"url",url,"profiles",profiles,"updated",System.currentTimeMillis());if(at<0)all.put(sub);else all.put(at,sub);
+        JSONObject sub=XrayProfiles.obj("id",id,"name",name.trim(),"url",url,"profiles",profiles,"warning",warning,"updated",System.currentTimeMillis());if(at<0)all.put(sub);else all.put(at,sub);
         // First import enables strict mode. Refresh never switches a lost selection to a different host.
         if(data.optString("selected").isEmpty()){data.put("selected",id+":"+profiles.getJSONObject(0).getString("id"));data.put("enabled",true);}
         write(data);

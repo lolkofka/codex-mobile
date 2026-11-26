@@ -233,6 +233,50 @@ public final class MobileFeatureTests extends Instrumentation {
         pass("message-only activity sorting, stable pins, no reorder on viewing, legacy visit exclusion, background completion, pagination and persistence");
     }
 
+    void subscriptionTests()throws Exception{
+        fresh();
+        String key="d223067b-4650-4280-9d0c-0d483f04bc31";
+        String first="vless://"+key+"@127.0.0.1:443?type=xhttp&path=%2Ftest&extra=%7B%22xmux%22%3A%7B%22maxConcurrency%22%3A1%7D%7D#one";
+        String second="vless://"+key+"@127.0.0.1:8443?type=grpc&serviceName=test#two";
+        String unsupported="hysteria2://synthetic-secret@127.0.0.1:443#not-supported";
+        String mixed=first+"\n"+unsupported+"\n"+second;
+        XrayProfiles.ImportResult plain=XrayProfiles.parseSubscription(mixed);
+        check(plain.profiles.length()==2&&plain.warning.contains("Hysteria2 (1)")&&!plain.warning.contains("synthetic-secret"),"mixed subscription retains supported hosts and reports only skipped protocol counts");
+        String encoded=Base64.getEncoder().encodeToString(mixed.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        XrayProfiles.ImportResult base64=XrayProfiles.parseSubscription(encoded);
+        check(base64.profiles.length()==2&&base64.warning.equals(plain.warning),"Base64 mixed subscription behaves like plain share links");
+        check(base64.profiles.getJSONObject(0).getJSONObject("outbound").getJSONObject("streamSettings").getJSONObject("xhttpSettings").getJSONObject("extra").getJSONObject("xmux").getInt("maxConcurrency")==1,"mixed import preserves XHTTP extra");
+        check(XrayProfiles.parseSubscription(first+"\n"+first).profiles.length()==1,"supported duplicates still deduplicate");
+        JSONArray json=new JSONArray().put(plain.profiles.getJSONObject(0).getJSONObject("outbound")).put(AgentService.j("protocol","hysteria2"));
+        check(XrayProfiles.parseSubscription(json.toString()).warning.contains("Hysteria2"),"unsupported standalone JSON profiles have the same visible warning");
+        for(String rejected:new String[]{unsupported,first+"\nvless://broken",first+"\nhttps://example.invalid/",first+"\nvless://"+key+"@127.0.0.1:443?security=tls&allowInsecure=1"}){
+            boolean failed=false;try{XrayProfiles.parseSubscription(rejected);}catch(IOException expected){failed=true;}
+            check(failed,"unsupported-only and malformed or unsafe supported subscriptions fail without partial replacement");
+        }
+        TunnelManager manager=new TunnelManager(fake,()->{},()->{});
+        try{
+            CountDownLatch done=new CountDownLatch(1);String[] warning={""},error={""};
+            manager.importSubscription("","Synthetic mixed subscription",encoded,false,w->{warning[0]=w;done.countDown();},e->{error[0]=e;done.countDown();});
+            check(done.await(10,TimeUnit.SECONDS),"mixed subscription import finishes");until(()->!manager.working,2000,"import worker did not finish");
+            check(error[0].isEmpty()&&warning[0].contains("Hysteria2"),"successful import callback reports skipped profiles");
+            JSONObject saved=manager.store.read(),sub=saved.getJSONArray("subscriptions").getJSONObject(0);String id=sub.getString("id"),selected=saved.getString("selected");
+            check(sub.getJSONArray("profiles").length()==2&&sub.getString("warning").equals(warning[0])&&manager.enabled,"supported profiles and warning are stored with strict Xray enabled");
+            manager.reload();String packet=manager.packet().toString();
+            check(packet.contains("Hysteria2")&&!packet.contains(key)&&!packet.contains("synthetic-secret")&&!packet.contains("extra"),"subscription packet exposes warning, not proxy credentials or configs");
+            String encrypted=new String(java.nio.file.Files.readAllBytes(manager.store.file.toPath()),java.nio.charset.StandardCharsets.ISO_8859_1);
+            check(!encrypted.contains(key)&&!encrypted.contains("Hysteria2"),"profiles and warning are encrypted at rest");
+            CountDownLatch bad=new CountDownLatch(1);
+            manager.importSubscription(id,"Synthetic mixed subscription",first+"\nvless://broken",false,w->bad.countDown(),e->{error[0]=e;bad.countDown();});
+            check(bad.await(10,TimeUnit.SECONDS),"rejected refresh finishes");until(()->!manager.working,2000,"rejected refresh worker did not finish");
+            check(!error[0].isEmpty()&&manager.store.read().toString().equals(saved.toString()),"malformed supported profile preserves the previous subscription and selected host");
+            CountDownLatch clean=new CountDownLatch(1);error[0]="";
+            manager.importSubscription(id,"Synthetic mixed subscription",first+"\n"+second,false,w->{warning[0]=w;clean.countDown();},e->{error[0]=e;clean.countDown();});
+            check(clean.await(10,TimeUnit.SECONDS),"clean refresh finishes");until(()->!manager.working,2000,"clean refresh worker did not finish");
+            check(error[0].isEmpty()&&warning[0].isEmpty()&&manager.store.subscription(id).optString("warning").isEmpty()&&manager.store.read().getString("selected").equals(selected),"clean refresh clears the warning without switching selected host");
+        }finally{manager.close();}
+        pass("mixed subscription import, skipped-protocol warnings, Base64, XHTTP extra, encrypted persistence and atomic refresh");
+    }
+
     void mediaTests()throws Exception{
         fresh();
         android.graphics.Bitmap bitmap=android.graphics.Bitmap.createBitmap(80,40,android.graphics.Bitmap.Config.ARGB_8888);bitmap.eraseColor(0xff336699);
@@ -426,7 +470,7 @@ public final class MobileFeatureTests extends Instrumentation {
 
     @Override public void onStart(){
         Bundle result=new Bundle();
-        try{if(migrationOnly)migrationTest();else if(authOnly)authTest();else if(notifyOnly)notificationTest();else if(real)realTests();else{mockTests();parallelChatTests();pinTests();recencyTests();if(media){mediaTests();documentTests();}}result.putString("passed",String.join("; ",passed));result.putString("status","PASS");finish(Activity.RESULT_OK,result);}
+        try{if(migrationOnly)migrationTest();else if(authOnly)authTest();else if(notifyOnly)notificationTest();else if(real)realTests();else{mockTests();parallelChatTests();pinTests();recencyTests();subscriptionTests();if(media){mediaTests();documentTests();}}result.putString("passed",String.join("; ",passed));result.putString("status","PASS");finish(Activity.RESULT_OK,result);}
         catch(Throwable e){StringWriter s=new StringWriter();e.printStackTrace(new PrintWriter(s));result.putString("failure",s.toString());finish(Activity.RESULT_CANCELED,result);}
     }
 }
