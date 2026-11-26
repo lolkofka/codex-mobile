@@ -19,8 +19,9 @@ def main():
                     str(ROOT/'android/src/local/avr/codex/LoginFlow.java'),
                     str(ROOT/'android/src/local/avr/codex/EngineNetworkProxy.java'),
                     str(ROOT/'android/src/local/avr/codex/ChatRecency.java'),
+                    str(ROOT/'phone-tools/BackgroundDisplayPolicy.java'),
                     *map(str, (ROOT/'tests/host').glob('*.java'))], check=True)
-    for name in ['LoginFlowTest', 'EngineNetworkProxyTest', 'ChatRecencyTest']:
+    for name in ['LoginFlowTest', 'EngineNetworkProxyTest', 'ChatRecencyTest', 'BackgroundDisplayPolicyTest']:
         subprocess.run([java_tool('java'), '-cp', str(out), 'local.avr.codex.copy.'+name], check=True, timeout=30)
 
 

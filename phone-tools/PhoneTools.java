@@ -11,16 +11,50 @@ import java.lang.Process;
 import java.nio.*;
 import java.nio.file.*;
 import java.util.*;
+import local.avr.codex.copy.BackgroundDisplayPolicy;
 
 /** Root-only local socket, fixed command set, no shell evaluation. */
 public final class PhoneTools {
   static final File ROOT = new File("/data/adb/avr-codex-copy/tools");
   static final String SOCKET = "avr.codex.copy.background.v1";
   static final int WIDTH=720, HEIGHT=1280;
+  static final long IDLE_MS=300000;
+  // Android system flags: own content, touch, cleanup, trusted, separate power/keyguard group,
+  // own focus, no sound/haptics, and never steal the owner's top focus.
+  static final int DISPLAY_FLAGS=1|8|(1<<6)|(1<<8)|(1<<10)|(1<<11)|(1<<12)|(1<<13)|(1<<14)|(1<<16);
   static VirtualDisplay display;
+  static PowerManager.WakeLock displayWakeLock;
+  static HandlerThread frames;
+  static int displayGroup;
   static ImageReader reader;
   static Image latestImage;
-  static long lastUse;
+  static volatile long lastUse,lastFrameAt,frameSequence;
+  static void cleanup(){
+    synchronized(PhoneTools.class){
+      if(displayWakeLock!=null&&displayWakeLock.isHeld())displayWakeLock.release();
+      if(display!=null){display.release();display=null;}
+      if(latestImage!=null){latestImage.close();latestImage=null;}
+      if(reader!=null){reader.close();reader=null;}
+      if(frames!=null)frames.quitSafely();
+    }
+  }
+  static void active(){
+    lastUse=SystemClock.elapsedRealtime();
+    // A bounded, display-scoped lock; never use the global two-argument newWakeLock API.
+    displayWakeLock.acquire(IDLE_MS+2000);
+  }
+  static void independentPower(Context ctx)throws Exception{
+    android.view.Display screen=display.getDisplay();int id=screen.getDisplayId();
+    Class<?> infoClass=Class.forName("android.view.DisplayInfo");Object info=infoClass.getConstructor().newInstance();
+    if(!((Boolean)android.view.Display.class.getMethod("getDisplayInfo",infoClass).invoke(screen,info)))throw new IOException("Background display information unavailable");
+    displayGroup=infoClass.getField("displayGroupId").getInt(info);
+    int unlocked=android.view.Display.class.getField("FLAG_ALWAYS_UNLOCKED").getInt(null);
+    if(id<=0||displayGroup<=0||(screen.getFlags()&unlocked)==0)throw new IOException("Independent background display unavailable; primary screen untouched");
+    PowerManager power=(PowerManager)ctx.getSystemService(Context.POWER_SERVICE);
+    displayWakeLock=(PowerManager.WakeLock)PowerManager.class.getMethod("newWakeLock",int.class,String.class,int.class)
+      .invoke(power,PowerManager.SCREEN_BRIGHT_WAKE_LOCK|PowerManager.ACQUIRE_CAUSES_WAKEUP,"Codex:BackgroundDisplay",id);
+    displayWakeLock.setReferenceCounted(false);active();
+  }
   static JSONObject json(Object... p) throws Exception {JSONObject j=new JSONObject();for(int i=0;i<p.length;i+=2)j.put((String)p[i],p[i+1]);return j;}
   static String exec(String... argv) throws Exception {
     Process p=new ProcessBuilder(argv).redirectErrorStream(true).start();
@@ -43,8 +77,11 @@ public final class PhoneTools {
   static JSONObject handle(JSONObject req) throws Exception {
     String cmd=req.getString("command");JSONArray a=req.getJSONArray("args");
     if(cmd.equals("stop")){new Handler(Looper.getMainLooper()).postDelayed(()->System.exit(0),150);return json("ok",true,"stopped",true);}
-    enabled();lastUse=SystemClock.elapsedRealtime();int id=display.getDisplay().getDisplayId();
-    if(cmd.equals("status"))return json("ok",true,"active",true,"display",id,"width",WIDTH,"height",HEIGHT,"ownFocus",true);
+    enabled();int id=display.getDisplay().getDisplayId();
+    if(cmd.equals("status"))return json("ok",true,"active",true,"display",id,"displayGroup",displayGroup,"width",WIDTH,"height",HEIGHT,"ownFocus",true,
+      "alwaysUnlocked",true,"independentPower",true,"wakeLockHeld",displayWakeLock.isHeld(),"displayState",display.getDisplay().getState(),
+      "frameSequence",frameSequence,"lastFrameAgeMs",lastFrameAt==0?-1:SystemClock.elapsedRealtime()-lastFrameAt,"idleRemainingMs",Math.max(0,IDLE_MS-(SystemClock.elapsedRealtime()-lastUse)));
+    active();
     if(cmd.equals("screenshot")){
       File out=new File(ROOT,"background/screen.png");out.getParentFile().mkdirs();
       synchronized(PhoneTools.class){
@@ -58,11 +95,7 @@ public final class PhoneTools {
     }
     if(cmd.equals("launch")){
       String pkg=a.getString(0);if(!pkg.matches("[A-Za-z0-9_]+(?:\\.[A-Za-z0-9_]+)+"))throw new IllegalArgumentException("Invalid package");
-      String top=exec("/system/bin/dumpsys","window","displays");boolean primary=false;
-      for(String line:top.split("\n")){
-        if(line.trim().startsWith("Display: mDisplayId="))primary=line.contains("mDisplayId=0 ");
-        if(primary&&line.contains("mCurrentFocus=")&&line.contains(" "+pkg+"/"))throw new IOException("Приложение сейчас открыто у владельца. Не переношу его с основного экрана.");
-      }
+      if(BackgroundDisplayPolicy.ownerHasPackage(exec("/system/bin/dumpsys","window","displays"),pkg))throw new IOException("Приложение сейчас открыто у владельца. Не переношу его с основного экрана.");
       String component=exec("/system/bin/cmd","package","resolve-activity","--brief","-a","android.intent.action.MAIN","-c","android.intent.category.LAUNCHER",pkg).trim();
       String[] lines=component.split("\n");component=lines[lines.length-1].trim();
       if(!component.matches("[A-Za-z0-9_.$]+/[A-Za-z0-9_.$]+"))throw new IOException("Launcher activity not found");
@@ -85,18 +118,18 @@ public final class PhoneTools {
     enabled();Looper.prepareMainLooper();
     Object thread=Class.forName("android.app.ActivityThread").getMethod("systemMain").invoke(null);
     Context ctx=(Context)thread.getClass().getMethod("getSystemContext").invoke(thread);
-    HandlerThread frames=new HandlerThread("background-frames");frames.start();
+    Runtime.getRuntime().addShutdownHook(new Thread(PhoneTools::cleanup));
+    frames=new HandlerThread("background-frames");frames.start();
+    try{
     reader=ImageReader.newInstance(WIDTH,HEIGHT,PixelFormat.RGBA_8888,3);
     reader.setOnImageAvailableListener(r->{try{
       Image image=r.acquireLatestImage();if(image==null)return;
-      synchronized(PhoneTools.class){if(latestImage!=null)latestImage.close();latestImage=image;}
+      synchronized(PhoneTools.class){if(latestImage!=null)latestImage.close();latestImage=image;lastFrameAt=SystemClock.elapsedRealtime();frameSequence++;}
     }catch(Exception ignored){}},new Handler(frames.getLooper()));
     // Own focus + no top-focus stealing; destroy content rather than move it to the owner's screen.
-    int flags=1|8|(1<<6)|(1<<8)|(1<<10)|(1<<14)|(1<<16);
-    display=((DisplayManager)ctx.getSystemService(Context.DISPLAY_SERVICE)).createVirtualDisplay("Codex Mobile Background",WIDTH,HEIGHT,240,reader.getSurface(),flags);
+    display=((DisplayManager)ctx.getSystemService(Context.DISPLAY_SERVICE)).createVirtualDisplay("Codex Mobile Background",WIDTH,HEIGHT,240,reader.getSurface(),DISPLAY_FLAGS);
     if(display==null)throw new IOException("Virtual display unavailable");
-    lastUse=SystemClock.elapsedRealtime();
-    Runtime.getRuntime().addShutdownHook(new Thread(()->{if(display!=null)display.release();if(reader!=null)reader.close();}));
+    independentPower(ctx);
     LocalServerSocket server=new LocalServerSocket(SOCKET);
     new Thread(()->{while(true){try(LocalSocket client=server.accept()){
       if(client.getPeerCredentials().getUid()!=0)continue;client.setSoTimeout(10000);
@@ -107,9 +140,10 @@ public final class PhoneTools {
     }catch(Exception ignored){}}},"root-local-control").start();
     Handler timer=new Handler(Looper.getMainLooper());timer.postDelayed(new Runnable(){public void run(){
       try{enabled();}catch(Exception e){System.exit(0);}
-      if(SystemClock.elapsedRealtime()-lastUse>300000)System.exit(0);
+      if(SystemClock.elapsedRealtime()-lastUse>IDLE_MS)System.exit(0);
       timer.postDelayed(this,1000);
     }},1000);
     System.out.println("DISPLAY="+display.getDisplay().getDisplayId());Looper.loop();
+    }catch(Exception e){cleanup();throw e;}
   }
 }

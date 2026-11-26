@@ -7,6 +7,7 @@ case "${1:-help}" in
   echo 'Root-only background screen. Requires the background toggle in Codex Mobile.'
   echo 'launch PACKAGE | status | screenshot | tap X Y | swipe X1 Y1 X2 Y2 | keyevent KEY | text TEXT | stop'
   echo 'Never falls back to display 0. Screen closes after five idle minutes or when access is revoked.'
+  echo 'Independent display group: works while the phone is locked or asleep. Status polling does not extend the session.'
   exit 0;;
  status|stop)
   /system/bin/app_process /system/bin PhoneTools "$@" 2>/dev/null || echo '{"ok":true,"active":false}'

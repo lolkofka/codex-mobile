@@ -16,6 +16,31 @@
 дисплее 0 при ошибке. Глобальные аппаратные клавиши запрещены. Управление
 доступно только root через локальный Unix-сокет; сетевого управляющего порта нет.
 При отключении доступа, закрытии клиента или пяти минутах простоя дисплей удаляется.
+Проверка основного приложения учитывает и `mFocusedApp`: приложение владельца
+не переносится на фоновый экран, когда его окно скрыто экраном блокировки.
+
+Фоновый дисплей имеет отдельную display group и флаг ALWAYS_UNLOCKED: блокировка
+основного экрана к нему не применяется. Wake lock привязан к ID только фонового
+дисплея через трёхпараметрический `PowerManager.newWakeLock`, поэтому основной
+экран может оставаться выключенным. Глобальный wake lock и отключение keyguard
+не используются. Если система не поддерживает отдельную группу или изоляцию
+блокировки, запуск завершается ошибкой, без перехода на основной экран.
+
+Удержание бодрствования ограничено пятью минутами с небольшим запасом на очистку
+и продлевается только рабочими командами. `status` не продлевает сеанс. Статус
+показывает `displayGroup`, `alwaysUnlocked`, `independentPower`, `wakeLockHeld`,
+`displayState`, `frameSequence`, `lastFrameAgeMs` и `idleRemainingMs`. При стопе,
+тайм-ауте или отзыве доступа освобождаются wake lock, кадры и сам дисплей.
+
+Тестовый APK собирается командой `python tools/build_background_tests.py`.
+Он содержит только счётчик кадров и кнопку, без keep-screen-on, show-when-locked,
+сети или пользовательских данных. Запускать через `codex-apps launch
+local.avr.codex.displaytest`; затем проверить рост счётчика, нажатие и сохранение
+состояния OFF у основного дисплея под блокировкой. Для завершения —
+`codex-phone-access stop` и удаление тестового APK.
+
+Механизмы Android: [отдельная группа и ALWAYS_UNLOCKED](https://android.googlesource.com/platform/frameworks/base/+/refs/heads/android16-release/core/java/android/hardware/display/DisplayManager.java),
+[wake lock с ID дисплея](https://android.googlesource.com/platform/frameworks/base/+/ee50d90e9d41c877bed65fdfd39240c8693f57b4/core/java/android/os/PowerManager.java).
 
 `tools/bin/codex-traffic https PACKAGE SECONDS` работает только с выбранным UID,
 на 10–120 секунд. Общие UID и сам Codex отклоняются. Требуются разрешённый
